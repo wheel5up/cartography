@@ -36,17 +36,6 @@ class AWSTransitGatewayRouteTableNodeProperties(CartographyNodeProperties):
 
 
 @dataclass(frozen=True)
-class AWSTransitGatewayRouteTableSchema(CartographyNodeSchema):
-    label: str = "AWSTransitGatewayRouteTable"
-    properties: AWSTransitGatewayRouteTableNodeProperties = (
-        AWSTransitGatewayRouteTableNodeProperties()
-    )
-    other_relationships: OtherRelationships = OtherRelationships([
-        # route-table -> transit-gateway relationship added for model-driven loading
-    ])
-
-
-@dataclass(frozen=True)
 class AWSTransitGatewayRouteTableToTGWRelRelProperties(CartographyRelProperties):
     lastupdated: PropertyRef = PropertyRef("lastupdated", set_in_kwargs=True)
 
@@ -63,10 +52,41 @@ class AWSTransitGatewayRouteTableToTGWRel(CartographyRelSchema):
         AWSTransitGatewayRouteTableToTGWRelRelProperties()
     )
 
-# append to other_relationships
-AWSTransitGatewayRouteTableSchema.other_relationships = OtherRelationships([
-    AWSTransitGatewayRouteTableToTGWRel(),
-])
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteTableToAWSAccountRelRelProperties(CartographyRelProperties):
+    lastupdated: PropertyRef = PropertyRef("lastupdated", set_in_kwargs=True)
+
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteTableToAWSAccountRel(CartographyRelSchema):
+    target_node_label: str = "AWSAccount"
+    target_node_matcher: TargetNodeMatcher = make_target_node_matcher(
+        {"id": PropertyRef("AWS_ID", set_in_kwargs=True)},
+    )
+    direction: LinkDirection = LinkDirection.INWARD
+    rel_label: str = "RESOURCE"
+    properties: AWSTransitGatewayRouteTableToAWSAccountRelRelProperties = (
+        AWSTransitGatewayRouteTableToAWSAccountRelRelProperties()
+    )
+
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteTableSchema(CartographyNodeSchema):
+    label: str = "AWSTransitGatewayRouteTable"
+    properties: AWSTransitGatewayRouteTableNodeProperties = (
+        AWSTransitGatewayRouteTableNodeProperties()
+    )
+    # Links the route table to its owning AWSAccount; required for account-scoped
+    # cleanup and so the node is reachable from the account.
+    sub_resource_relationship: AWSTransitGatewayRouteTableToAWSAccountRel = (
+        AWSTransitGatewayRouteTableToAWSAccountRel()
+    )
+    # Declared inline (not appended after the class) so the frozen dataclass
+    # actually carries the relationship at load time.
+    other_relationships: OtherRelationships = OtherRelationships([
+        AWSTransitGatewayRouteTableToTGWRel(),
+    ])
 
 
 # =============================================================================
@@ -80,7 +100,7 @@ class AWSTransitGatewayRouteNodeProperties(CartographyNodeProperties):
     transit_gateway_route_table_id: PropertyRef = PropertyRef("transit_gateway_route_table_id")
     destination_cidr_block: PropertyRef = PropertyRef("destination_cidr_block")
     destination_ipv6_cidr_block: PropertyRef = PropertyRef("destination_ipv6_cidr_block")
-    target: PropertyRef = PropertyRef("_target")
+    target: PropertyRef = PropertyRef("target")
     state: PropertyRef = PropertyRef("state")
     origin: PropertyRef = PropertyRef("origin")
     region: PropertyRef = PropertyRef("Region", set_in_kwargs=True)
@@ -141,24 +161,6 @@ class AWSTransitGatewayRouteToTGWRel(CartographyRelSchema):
     )
 
 
-@dataclass(frozen=True)
-class AWSTransitGatewayRouteSchema(CartographyNodeSchema):
-    label: str = "AWSTransitGatewayRoute"
-    properties: AWSTransitGatewayRouteNodeProperties = (
-        AWSTransitGatewayRouteNodeProperties()
-    )
-    sub_resource_relationship: AWSTransitGatewayRouteToAWSAccountRel = (
-        AWSTransitGatewayRouteToAWSAccountRel()
-    )
-    other_relationships: OtherRelationships = OtherRelationships(
-        [
-            AWSTransitGatewayRouteToAttachmentRel(),
-            AWSTransitGatewayRouteToTGWRel(),
-            # Route -> RouteTable relationship will be appended below
-        ]
-    )
-
-
 # Route -> RouteTable relationship (model-driven)
 @dataclass(frozen=True)
 class AWSTransitGatewayRouteToRouteTableRelRelProperties(CartographyRelProperties):
@@ -177,12 +179,25 @@ class AWSTransitGatewayRouteToRouteTableRel(CartographyRelSchema):
         AWSTransitGatewayRouteToRouteTableRelRelProperties()
     )
 
-# Append the new rel schema to the route schema
-AWSTransitGatewayRouteSchema.other_relationships = OtherRelationships([
-    AWSTransitGatewayRouteToAttachmentRel(),
-    AWSTransitGatewayRouteToTGWRel(),
-    AWSTransitGatewayRouteToRouteTableRel(),
-])
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteSchema(CartographyNodeSchema):
+    label: str = "AWSTransitGatewayRoute"
+    properties: AWSTransitGatewayRouteNodeProperties = (
+        AWSTransitGatewayRouteNodeProperties()
+    )
+    sub_resource_relationship: AWSTransitGatewayRouteToAWSAccountRel = (
+        AWSTransitGatewayRouteToAWSAccountRel()
+    )
+    # All relationships declared inline (not appended after the class) so the
+    # frozen dataclass carries them at load time.
+    other_relationships: OtherRelationships = OtherRelationships(
+        [
+            AWSTransitGatewayRouteToAttachmentRel(),
+            AWSTransitGatewayRouteToTGWRel(),
+            AWSTransitGatewayRouteToRouteTableRel(),
+        ]
+    )
 
 
 # =============================================================================
@@ -213,10 +228,28 @@ class AWSTransitGatewayRouteTableAssociationToRouteTableRel(CartographyRelSchema
     target_node_matcher: TargetNodeMatcher = make_target_node_matcher(
         {"id": PropertyRef("route_table_id")},
     )
-    direction: LinkDirection = LinkDirection.INWARD
-    rel_label: str = "RESOURCE"
+    direction: LinkDirection = LinkDirection.OUTWARD
+    rel_label: str = "ASSOCIATED_WITH"
     properties: AWSTransitGatewayRouteTableAssociationToRouteTableRelRelProperties = (
         AWSTransitGatewayRouteTableAssociationToRouteTableRelRelProperties()
+    )
+
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteTableAssociationToAWSAccountRelRelProperties(CartographyRelProperties):
+    lastupdated: PropertyRef = PropertyRef("lastupdated", set_in_kwargs=True)
+
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteTableAssociationToAWSAccountRel(CartographyRelSchema):
+    target_node_label: str = "AWSAccount"
+    target_node_matcher: TargetNodeMatcher = make_target_node_matcher(
+        {"id": PropertyRef("AWS_ID", set_in_kwargs=True)},
+    )
+    direction: LinkDirection = LinkDirection.INWARD
+    rel_label: str = "RESOURCE"
+    properties: AWSTransitGatewayRouteTableAssociationToAWSAccountRelRelProperties = (
+        AWSTransitGatewayRouteTableAssociationToAWSAccountRelRelProperties()
     )
 
 
@@ -225,6 +258,9 @@ class AWSTransitGatewayRouteTableAssociationSchema(CartographyNodeSchema):
     label: str = "AWSTransitGatewayRouteTableAssociation"
     properties: AWSTransitGatewayRouteTableAssociationNodeProperties = (
         AWSTransitGatewayRouteTableAssociationNodeProperties()
+    )
+    sub_resource_relationship: AWSTransitGatewayRouteTableAssociationToAWSAccountRel = (
+        AWSTransitGatewayRouteTableAssociationToAWSAccountRel()
     )
     other_relationships: OtherRelationships = OtherRelationships([
         AWSTransitGatewayRouteTableAssociationToRouteTableRel(),
@@ -265,10 +301,31 @@ class AWSTransitGatewayRouteTablePropagationToRouteTableRel(CartographyRelSchema
 
 
 @dataclass(frozen=True)
+class AWSTransitGatewayRouteTablePropagationToAWSAccountRelRelProperties(CartographyRelProperties):
+    lastupdated: PropertyRef = PropertyRef("lastupdated", set_in_kwargs=True)
+
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteTablePropagationToAWSAccountRel(CartographyRelSchema):
+    target_node_label: str = "AWSAccount"
+    target_node_matcher: TargetNodeMatcher = make_target_node_matcher(
+        {"id": PropertyRef("AWS_ID", set_in_kwargs=True)},
+    )
+    direction: LinkDirection = LinkDirection.INWARD
+    rel_label: str = "RESOURCE"
+    properties: AWSTransitGatewayRouteTablePropagationToAWSAccountRelRelProperties = (
+        AWSTransitGatewayRouteTablePropagationToAWSAccountRelRelProperties()
+    )
+
+
+@dataclass(frozen=True)
 class AWSTransitGatewayRouteTablePropagationSchema(CartographyNodeSchema):
     label: str = "AWSTransitGatewayRouteTablePropagation"
     properties: AWSTransitGatewayRouteTablePropagationNodeProperties = (
         AWSTransitGatewayRouteTablePropagationNodeProperties()
+    )
+    sub_resource_relationship: AWSTransitGatewayRouteTablePropagationToAWSAccountRel = (
+        AWSTransitGatewayRouteTablePropagationToAWSAccountRel()
     )
     other_relationships: OtherRelationships = OtherRelationships([
         AWSTransitGatewayRouteTablePropagationToRouteTableRel(),
