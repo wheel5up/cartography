@@ -41,7 +41,32 @@ class AWSTransitGatewayRouteTableSchema(CartographyNodeSchema):
     properties: AWSTransitGatewayRouteTableNodeProperties = (
         AWSTransitGatewayRouteTableNodeProperties()
     )
-    other_relationships: OtherRelationships = OtherRelationships([])
+    other_relationships: OtherRelationships = OtherRelationships([
+        # route-table -> transit-gateway relationship added for model-driven loading
+    ])
+
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteTableToTGWRelRelProperties(CartographyRelProperties):
+    lastupdated: PropertyRef = PropertyRef("lastupdated", set_in_kwargs=True)
+
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteTableToTGWRel(CartographyRelSchema):
+    target_node_label: str = "AWSTransitGateway"
+    target_node_matcher: TargetNodeMatcher = make_target_node_matcher(
+        {"tgw_id": PropertyRef("transit_gateway_id")},
+    )
+    direction: LinkDirection = LinkDirection.OUTWARD
+    rel_label: str = "BELONGS_TO_TGW"
+    properties: AWSTransitGatewayRouteTableToTGWRelRelProperties = (
+        AWSTransitGatewayRouteTableToTGWRelRelProperties()
+    )
+
+# append to other_relationships
+AWSTransitGatewayRouteTableSchema.other_relationships = OtherRelationships([
+    AWSTransitGatewayRouteTableToTGWRel(),
+])
 
 
 # =============================================================================
@@ -129,8 +154,35 @@ class AWSTransitGatewayRouteSchema(CartographyNodeSchema):
         [
             AWSTransitGatewayRouteToAttachmentRel(),
             AWSTransitGatewayRouteToTGWRel(),
+            # Route -> RouteTable relationship will be appended below
         ]
     )
+
+
+# Route -> RouteTable relationship (model-driven)
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteToRouteTableRelRelProperties(CartographyRelProperties):
+    lastupdated: PropertyRef = PropertyRef("lastupdated", set_in_kwargs=True)
+
+
+@dataclass(frozen=True)
+class AWSTransitGatewayRouteToRouteTableRel(CartographyRelSchema):
+    target_node_label: str = "AWSTransitGatewayRouteTable"
+    target_node_matcher: TargetNodeMatcher = make_target_node_matcher(
+        {"id": PropertyRef("transit_gateway_route_table_id")},
+    )
+    direction: LinkDirection = LinkDirection.OUTWARD
+    rel_label: str = "ROUTE_OF"
+    properties: AWSTransitGatewayRouteToRouteTableRelRelProperties = (
+        AWSTransitGatewayRouteToRouteTableRelRelProperties()
+    )
+
+# Append the new rel schema to the route schema
+AWSTransitGatewayRouteSchema.other_relationships = OtherRelationships([
+    AWSTransitGatewayRouteToAttachmentRel(),
+    AWSTransitGatewayRouteToTGWRel(),
+    AWSTransitGatewayRouteToRouteTableRel(),
+])
 
 
 # =============================================================================
