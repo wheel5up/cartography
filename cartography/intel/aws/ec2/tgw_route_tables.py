@@ -92,6 +92,10 @@ def transform_tgw_route_tables(data: list[dict[str, Any]]) -> tuple[list[dict[st
             "id": rtb_id,
             "TransitGatewayRouteTableId": rtb_id,
             "TransitGatewayId": rtb.get("TransitGatewayId"),
+            # Lowercase key consumed by the BELONGS_TO_TGW relationship matcher
+            # (PropertyRef("transit_gateway_id")). Without this the edge to the
+            # AWSTransitGateway node cannot match.
+            "transit_gateway_id": rtb.get("TransitGatewayId"),
             "State": rtb.get("State"),
         }
         # Only include Region if present (otherwise use Region passed to load)
@@ -102,6 +106,17 @@ def transform_tgw_route_tables(data: list[dict[str, Any]]) -> tuple[list[dict[st
         for route in rtb.get("Routes", []) if rtb.get("Routes") else []:
             dest = route.get("DestinationCidrBlock") or route.get("DestinationIpv6CidrBlock") or str(route)
             route_id = f"{rtb_id}|{dest}"
+            # The attachment a route points to is nested under
+            # TransitGatewayAttachments[]; the search/describe route APIs do not
+            # return a top-level TransitGatewayAttachmentId. Use the first
+            # attachment's id as the route target for the
+            # ROUTES_TO_TGW_ATTACHMENT relationship matcher.
+            attachments = route.get("TransitGatewayAttachments") or []
+            target = None
+            if attachments:
+                target = attachments[0].get("TransitGatewayAttachmentId")
+            if not target:
+                target = route.get("TransitGatewayAttachmentId") or None
             route_entry: dict[str, Any] = {
                 "id": route_id,
                 "transit_gateway_route_table_id": rtb_id,
@@ -110,7 +125,7 @@ def transform_tgw_route_tables(data: list[dict[str, Any]]) -> tuple[list[dict[st
                 "destination_ipv6_cidr_block": route.get("DestinationIpv6CidrBlock"),
                 "state": route.get("State"),
                 "origin": route.get("Origin"),
-                "target": route.get("TransitGatewayAttachmentId") or route.get("TransitGatewayRouteTableAnnouncementId") or None,
+                "target": target,
             }
             if rtb.get("Region") is not None:
                 route_entry["Region"] = rtb.get("Region")
