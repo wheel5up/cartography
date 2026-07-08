@@ -217,23 +217,24 @@ def sync_transit_gateway_route_tables(
         load_transit_gateway_routes(neo4j_session, route_data, region, current_aws_account_id, update_tag)
         load_transit_gateway_route_tables(neo4j_session, rtb_data, region, current_aws_account_id, update_tag)
 
-        # Load associations and propagations — prefer values present on the described RTBs
-        assoc_list: list[dict[str, Any]] = []
-        for rtb in rts:
-            assoc_list.extend(rtb.get("Associations", []))
-        if not assoc_list:
-            assoc_list = get_transit_gateway_route_table_associations(boto3_session, region)
+        # Associations and propagations are fetched per route table (scoped to
+        # this region's tables only) to avoid the cartesian duplication that
+        # occurred when the fetch re-enumerated route tables on every region
+        # iteration. The get_/describe association/propagation APIs do not
+        # return the parent route table id, so the fetch helpers inject it and
+        # synthesize a stable id (route_table_id|attachment_id) for dedup and
+        # relationship matching.
+        assoc_list = get_transit_gateway_route_table_associations(
+            boto3_session, region, rts
+        )
         transformed_assoc = transform_tgw_route_table_associations(assoc_list)
         load_transit_gateway_route_table_associations(
             neo4j_session, transformed_assoc, region, current_aws_account_id, update_tag
         )
 
-        prop_list: list[dict[str, Any]] = []
-        for rtb in rts:
-            # Some describe responses include PropagatingVgws; use that if present
-            prop_list.extend(rtb.get("PropagatingVgws", []))
-        if not prop_list:
-            prop_list = get_transit_gateway_route_table_propagations(boto3_session, region)
+        prop_list = get_transit_gateway_route_table_propagations(
+            boto3_session, region, rts
+        )
         transformed_propagations = transform_tgw_route_table_propagations(prop_list)
         load_transit_gateway_route_table_propagations(
             neo4j_session, transformed_propagations, region, current_aws_account_id, update_tag
@@ -244,7 +245,19 @@ def sync_transit_gateway_route_tables(
 
 # Association/Propagation helpers
 
-def get_transit_gateway_route_table_associations(boto3_session: boto3.session.Session, region: str) -> list[dict[str, Any]]:
+def get_transit_gateway_route_table_associations(
+    boto3_session: boto3.session.Session,
+    region: str,
+    route_tables: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fetch associations for the given route tables in this region.
+
+    Iterates only the route tables passed in (already fetched for this region)
+    rather than re-enumerating, which previously caused per-region cartesian
+    duplication. The get_/describe association API does not return the parent
+    route table id, so it is injected here and a stable id is synthesized from
+    route_table_id|attachment_id for dedup and relationship matching.
+    """
     client = create_boto3_client(boto3_session, "ec2", region_name=region, config=get_botocore_config())
     associations: list[dict[str, Any]] = []
     try:
@@ -260,10 +273,7 @@ def get_transit_gateway_route_table_associations(boto3_session: boto3.session.Se
                 region,
             )
             return associations
-        # The get/describe operation requires a TransitGatewayRouteTableId parameter in newer models.
-        # To be robust, iterate over known route tables and call the API per table with explicit NextToken handling.
-        rts = get_transit_gateway_route_tables(boto3_session, region)
-        for rtb in rts:
+        for rtb in route_tables:
             rtb_id = rtb.get("TransitGatewayRouteTableId")
             if not rtb_id:
                 continue
@@ -273,7 +283,21 @@ def get_transit_gateway_route_table_associations(boto3_session: boto3.session.Se
                 if next_token:
                     params["NextToken"] = next_token
                 resp = getattr(client, api_name)(**params)
-                associations.extend(resp.get("TransitGatewayRouteTableAssociations", []))
+                # get_ returns 'Associations'; describe_ returns
+                # 'TransitGatewayRouteTableAssociations'. Support both.
+                items = resp.get("Associations")
+                if items is None:
+                    items = resp.get("TransitGatewayRouteTableAssociations", [])
+                for item in items:
+                    # The API does not echo the parent route table id; inject it
+                    # and synthesize a stable id for dedup + matching.
+                    item.setdefault("TransitGatewayRouteTableId", rtb_id)
+                    attachment = item.get("TransitGatewayAttachmentId") or item.get("ResourceId")
+                    if not item.get("TransitGatewayRouteTableAssociationId"):
+                        item["TransitGatewayRouteTableAssociationId"] = (
+                            f"{rtb_id}|{attachment}" if attachment else None
+                        )
+                    associations.append(item)
                 next_token = resp.get("NextToken")
                 if not next_token:
                     break
@@ -287,7 +311,16 @@ def get_transit_gateway_route_table_associations(boto3_session: boto3.session.Se
 
 
 
-def get_transit_gateway_route_table_propagations(boto3_session: boto3.session.Session, region: str) -> list[dict[str, Any]]:
+def get_transit_gateway_route_table_propagations(
+    boto3_session: boto3.session.Session,
+    region: str,
+    route_tables: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fetch propagations for the given route tables in this region.
+
+    Iterates only the route tables passed in (already fetched for this region)
+    rather than re-enumerating, avoiding per-region cartesian duplication.
+    """
     client = create_boto3_client(boto3_session, "ec2", region_name=region, config=get_botocore_config())
     props: list[dict[str, Any]] = []
     try:
@@ -303,10 +336,7 @@ def get_transit_gateway_route_table_propagations(boto3_session: boto3.session.Se
                 region,
             )
             return props
-        # The get/describe operation requires a TransitGatewayRouteTableId parameter in newer models.
-        # Iterate per known route table and call API per-table with explicit NextToken handling.
-        rts = get_transit_gateway_route_tables(boto3_session, region)
-        for rtb in rts:
+        for rtb in route_tables:
             rtb_id = rtb.get("TransitGatewayRouteTableId")
             if not rtb_id:
                 continue
@@ -342,15 +372,27 @@ def get_transit_gateway_route_table_propagations(boto3_session: boto3.session.Se
 
 def transform_tgw_route_table_associations(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
     transformed: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for assoc in data:
+        assoc_id = assoc.get("TransitGatewayRouteTableAssociationId")
+        # Dedup on the synthesized/real id so the same association fetched more
+        # than once does not create duplicate nodes/edges.
+        if assoc_id in seen:
+            continue
+        seen.add(assoc_id)
+        # State is flat on the get_ API and nested (AssociationState.State) on
+        # some describe_ responses; support both.
+        state = assoc.get("State")
+        if state is None and isinstance(assoc.get("AssociationState"), dict):
+            state = assoc["AssociationState"].get("State")
         transformed.append(
             {
-                "id": assoc.get("TransitGatewayRouteTableAssociationId"),
+                "id": assoc_id,
                 "route_table_id": assoc.get("TransitGatewayRouteTableId"),
                 "attachment_id": assoc.get("TransitGatewayAttachmentId"),
                 "resource_id": assoc.get("ResourceId"),
                 "resource_type": assoc.get("ResourceType"),
-                "state": assoc.get("AssociationState", {}).get("State"),
+                "state": state,
             }
         )
     return transformed
