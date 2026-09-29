@@ -230,7 +230,22 @@ def load_tags(
         # If there is no data to load, save some time.
         return
     for tag_data_batch in batch(tag_data, size=100):
-        neo4j_session.execute_write(
+        # Use the retrying wrapper instead of a bare neo4j_session.execute_write()
+        # call. This function's UNWIND-based write (see INGEST_TAG_TEMPLATE) touches
+        # a wide set of pre-existing resource nodes across ~34 resource types, so it
+        # is more prone to lock contention with other concurrent writers (e.g. other
+        # accounts/modules syncing in parallel) than most single-resource-type
+        # modules. Without retry, a transient Neo4j error here (deadlock,
+        # EntityNotFound, connection reset) aborts the entire sync instead of
+        # retrying, even though every other write path in this same file
+        # (see cleanup()/_run_cleanup_until_empty() below) already uses
+        # execute_write_with_retry(). This exact gap was reported upstream in 2022
+        # (cartography-cncf/cartography#778, "AWS: use transactions for
+        # resourcegroupstaggingapi load_tags()") but was closed without a linked fix;
+        # confirmed still present on cartography-cncf/cartography master as of
+        # 2026-09-29. TODO: open a fresh upstream PR referencing #778.
+        execute_write_with_retry(
+            neo4j_session,
             _load_tags_tx,
             tag_data=tag_data_batch,
             resource_type=resource_type,
