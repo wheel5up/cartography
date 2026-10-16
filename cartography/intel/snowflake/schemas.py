@@ -3,7 +3,13 @@
 Schemas are listed per database. A collector role without ``USAGE`` on one
 database must not fail the whole sync, so a 403 or 404 on a single database is
 recorded as incomplete and the caller skips cleanup instead of deleting schemas it
-merely failed to re-read.
+merely failed to re-read. Snowflake also answers 400 for a database that cannot be
+addressed at all - for example an auto-generated ``DROPPED_USER$...`` placeholder
+database, whose name embeds characters (``@``, ``.``, ``$``) that break identifier
+quoting on this endpoint - which is the same "object does not exist, or operation
+cannot be performed" (Snowflake error 002043) class of failure
+``list_schema_objects`` already tolerates for schema-scoped listings one level
+down. See that function's docstring in ``util.py`` for the sibling case.
 """
 
 import logging
@@ -14,6 +20,7 @@ import requests
 
 from cartography.client.core.tx import load
 from cartography.graph.job import GraphJob
+from cartography.intel.snowflake.util import http_error_detail
 from cartography.intel.snowflake.util import iso_to_datetime
 from cartography.intel.snowflake.util import sf_fqn
 from cartography.intel.snowflake.util import sf_id
@@ -25,22 +32,36 @@ from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
 
+# Statuses on which a single database is skipped (its schema listing is
+# incomplete) rather than failing the whole Snowflake sync. 403/404 are the role
+# genuinely lacking USAGE or the database no longer existing; 400 is Snowflake
+# reporting an unaddressable database - confirmed via a real account
+# (2026-10-16): every `DROPPED_USER$<user>@<domain>_<epoch>` placeholder database
+# Snowflake auto-generates on user drop returns 400/002043 ("object does not
+# exist, or operation cannot be performed") on this exact endpoint, not 403/404,
+# because the embedded `@`/`.`/`$` characters in its name break REST identifier
+# quoting rather than signal a real permission gap. Matches the schema-level
+# precedent in `list_schema_objects`/`SCHEMA_LISTING_SKIPPABLE_STATUSES` one
+# level down - same root cause, different addressing layer.
+_DATABASE_SCHEMA_LISTING_SKIPPABLE_STATUSES = (400, 403, 404)
+
 
 @timeit
 def get_database_schemas(
     client: SnowflakeClient, database_name: str
 ) -> list[dict[str, Any]] | None:
-    """Schemas of one database, or None when the role cannot read that database."""
+    """Schemas of one database, or None when it cannot be read at all."""
     try:
         return client.list_all(
             f"/api/v2/databases/{sf_path_segment(database_name)}/schemas"
         )
     except requests.HTTPError as error:
-        skip_or_raise_http(error, 403, 404)
+        skip_or_raise_http(error, *_DATABASE_SCHEMA_LISTING_SKIPPABLE_STATUSES)
         logger.warning(
-            "Cannot list schemas of Snowflake database %s (permission denied); its "
-            "contents will be missing from the graph.",
+            "Cannot list schemas of Snowflake database %s (%s); its contents "
+            "will be missing from the graph.",
             database_name,
+            http_error_detail(error),
         )
         return None
 
