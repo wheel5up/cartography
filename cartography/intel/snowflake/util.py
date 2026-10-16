@@ -297,6 +297,47 @@ def skip_or_raise_http(error: requests.HTTPError, *skippable_statuses: int) -> N
         raise error
 
 
+# Snowflake's error code for "the connecting role lacks the required privilege on
+# this object" - confirmed via a real account (2026-10-16) on two different
+# endpoint shapes: a database-level schema listing ("...must have usage granted
+# on database ...") and a service sub-listing ("...must have monitor granted on
+# service ..."). Both answered HTTP 401 with this exact code, not the more
+# common 403 a missing USAGE/REFERENCES grant produces elsewhere in this
+# module. See ``is_insufficient_privileges_401`` for why this is checked
+# explicitly rather than treating every 401 as skippable.
+_INSUFFICIENT_PRIVILEGES_ERROR_CODE = "003001"
+
+
+def is_insufficient_privileges_401(error: requests.HTTPError) -> bool:
+    """Whether a 401 is Snowflake's privilege-gap error, not an auth failure.
+
+    Deliberately narrow: checks the Snowflake-specific error code in the
+    response body, not just the HTTP status. A blanket 401 skip is unsafe -
+    Snowflake's own docs document 401 for real authentication failures too
+    (390144 "JWT token is invalid.", 390432 "Network policy is required.").
+    If the collector's credential were actually broken, every listing would
+    answer 401; blanket-skipping all of them would silently "complete" a sync
+    that read nothing, the exact failure class the deploy repo's STATUS.md
+    documents a real production incident for (a Step Functions execution
+    reporting SUCCEEDED while every account's sync silently failed). Checking
+    the error code keeps the skip scoped to the one confirmed-safe case.
+
+    Each new call site that needs this should confirm its own real 401/003001
+    case against a live account before adopting it - the error code is
+    confirmed stable across at least two different object types (database,
+    service) as of 2026-10-16, but is not assumed to cover every object type
+    this module lists.
+    """
+    response = error.response
+    if response is None or response.status_code != 401:
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return body.get("code") == _INSUFFICIENT_PRIVILEGES_ERROR_CODE
+
+
 def is_sql_unavailable(error: Exception) -> bool:
     """Whether a SQL API failure means the feature or privilege is absent.
 

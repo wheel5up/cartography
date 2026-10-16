@@ -8,6 +8,16 @@ from, and whether anything it serves is reachable from the internet.
 ``get`` returns one bundle per service, pairing the raw service payload with the schema
 it was found in and with its three sub-listings, so ``transform`` can key every child on
 its service without re-deriving anything.
+
+A service sub-listing can also answer 401 with Snowflake error 003001
+("insufficient privileges ... must have MONITOR granted on service ..."),
+confirmed against a real account (2026-10-16): a role holding REFERENCES on
+the schema's tables/views has no implicit MONITOR on a specific service -
+SERVICE objects only support the MONITOR/OPERATE privilege pair (no
+USAGE/REFERENCES equivalent), and this org's deployed grants did not cover
+it. See ``util.is_insufficient_privileges_401`` for why this is tolerated
+via the specific error code rather than every 401 - the same helper covers
+``schemas.py``'s identical 401/003001 case for an unreadable database.
 """
 
 import logging
@@ -21,6 +31,7 @@ from cartography.graph.job import GraphJob
 from cartography.intel.snowflake.names import external_access_integration_ids
 from cartography.intel.snowflake.names import name_list
 from cartography.intel.snowflake.util import http_error_detail
+from cartography.intel.snowflake.util import is_insufficient_privileges_401
 from cartography.intel.snowflake.util import iso_to_datetime
 from cartography.intel.snowflake.util import list_schema_objects
 from cartography.intel.snowflake.util import SCHEMA_LISTING_SKIPPABLE_STATUSES
@@ -68,7 +79,8 @@ def get_service_sublisting(
             f"/services/{sf_path_segment(service_name)}/{sublisting}",
         )
     except requests.HTTPError as error:
-        skip_or_raise_http(error, *SCHEMA_LISTING_SKIPPABLE_STATUSES)
+        if not is_insufficient_privileges_401(error):
+            skip_or_raise_http(error, *SCHEMA_LISTING_SKIPPABLE_STATUSES)
         logger.warning(
             "Cannot list %s of Snowflake service %s.%s.%s (%s); they will be "
             "missing from the graph.",

@@ -22,6 +22,7 @@ from cartography.intel.snowflake.tables import get as get_tables
 from cartography.intel.snowflake.tags import get as get_tags
 from cartography.intel.snowflake.util import account_host
 from cartography.intel.snowflake.util import hyphenated_account_id
+from cartography.intel.snowflake.util import is_insufficient_privileges_401
 from cartography.intel.snowflake.util import is_sql_unavailable
 from cartography.intel.snowflake.util import iso_to_datetime
 from cartography.intel.snowflake.util import list_schema_objects
@@ -716,6 +717,47 @@ def test_skip_or_raise_http_only_swallows_expected_statuses():
     response.status_code = 500
     with pytest.raises(requests.HTTPError):
         skip_or_raise_http(error, 403, 404)
+
+
+def test_is_insufficient_privileges_401_matches_only_the_specific_error_code():
+    """Shared by schemas.py (an unreadable database) and services.py (a
+    service lacking MONITOR) - confirmed against a real account (2026-10-16)
+    that both endpoint shapes answer 401/003001 for an ordinary
+    permission-denied result, not an auth failure.
+    """
+    # The confirmed-safe case: 401 with Snowflake's own insufficient-privileges code.
+    response = requests.Response()
+    response.status_code = 401
+    response._content = json.dumps(
+        {
+            "code": "003001",
+            "message": "sql access control error: insufficient privileges ...",
+        },
+    ).encode()
+    assert is_insufficient_privileges_401(requests.HTTPError(response=response))
+
+    # A real auth failure uses 401 too, but a different code - must NOT match.
+    response = requests.Response()
+    response.status_code = 401
+    response._content = json.dumps(
+        {"code": "390144", "message": "JWT token is invalid. null"},
+    ).encode()
+    assert not is_insufficient_privileges_401(requests.HTTPError(response=response))
+
+    # A non-401 status never matches, even with the right code (defensive check).
+    response = requests.Response()
+    response.status_code = 403
+    response._content = json.dumps({"code": "003001", "message": "..."}).encode()
+    assert not is_insufficient_privileges_401(requests.HTTPError(response=response))
+
+    # A 401 with a non-JSON body cannot be confirmed safe - must NOT match.
+    response = requests.Response()
+    response.status_code = 401
+    response._content = b"not json"
+    assert not is_insufficient_privileges_401(requests.HTTPError(response=response))
+
+    # No response object at all (e.g. a connection-level error) - must NOT match.
+    assert not is_insufficient_privileges_401(requests.HTTPError())
 
 
 def test_is_sql_unavailable_distinguishes_gating_from_failure():
