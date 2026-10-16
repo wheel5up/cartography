@@ -11,6 +11,7 @@ from cartography.intel.snowflake.names import name_list
 from cartography.intel.snowflake.names import schema_object_fqn
 from cartography.intel.snowflake.util import iso_to_datetime
 from cartography.intel.snowflake.util import list_schema_objects
+from cartography.intel.snowflake.util import schedule_to_text
 from cartography.intel.snowflake.util import sf_fqn
 from cartography.intel.snowflake.util import sf_id
 from cartography.intel.snowflake.util import SnowflakeClient
@@ -59,7 +60,7 @@ def transform(
                 "database_name": database_name,
                 "schema_name": schema_name,
                 "parent_schema_id": schema["id"],
-                "target_lag": service.get("target_lag"),
+                "target_lag": schedule_to_text(service.get("target_lag")),
                 "warehouse": warehouse,
                 "warehouse_id": (
                     sf_id(account_id, "warehouse", sf_fqn(warehouse))

@@ -44,8 +44,14 @@ def test_sync_snowflake_cortex_search_services(mock_get, neo4j_session):
         "SnowflakeCortexSearchService",
         ["name", "target_lag", "search_column"],
     ) == {
-        ("REACTOR_LOG_SEARCH", "1 hour", "OPERATOR_NOTES"),
-        ("SAFETY_MEMO_SEARCH", "1 day", "MEMO_TEXT"),
+        # target_lag's source fixture data is the real nested-object shape
+        # (e.g. {"type": "USER_DEFINED", "seconds": 3600}), flattened by
+        # schedule_to_text() - "3600 seconds", not "1 hour" - confirming the
+        # fix for the real bug this test now guards against (a raw dict
+        # property crashing the whole sync; see cortex_search_services.py's
+        # transform()).
+        ("REACTOR_LOG_SEARCH", "3600 seconds", "OPERATOR_NOTES"),
+        ("SAFETY_MEMO_SEARCH", "86400 seconds", "MEMO_TEXT"),
     }
 
     assert check_rels(
