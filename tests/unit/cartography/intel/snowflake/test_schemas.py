@@ -155,18 +155,125 @@ def test_database_schema_listing_403_404_skips_only_that_database(status):
     assert complete is False
 
 
-@pytest.mark.parametrize("status", [401, 409])
-def test_database_schema_listing_still_fails_on_other_errors(status):
-    """A status outside (400, 403, 404) is not a known "unaddressable database"
-    or "no access" signal and must still fail the whole sync - mirrors the
-    schema-level precedent in test_util.py's
-    test_schema_listing_still_fails_on_other_errors.
+def test_database_schema_listing_409_still_fails():
+    """A status outside (400, 403, 404) and not the narrow 401/003001 case is
+    not a known "unaddressable database" or "no access" signal and must still
+    fail the whole sync - mirrors the schema-level precedent in
+    test_util.py's test_schema_listing_still_fails_on_other_errors.
     """
 
     # Arrange
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            _respond_json(self, {"message": "boom"}, status=status)
+            _respond_json(self, {"message": "boom"}, status=409)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = _serve(Handler)
+    client = _build_client(server.server_port)
+    try:
+        # Act / Assert
+        with pytest.raises(requests.HTTPError):
+            get_database_schemas(client, "SOME_DB")
+    finally:
+        _shutdown(server)
+
+
+def test_database_schema_listing_401_insufficient_privileges_skips(caplog):
+    """A 401 whose Snowflake error code is specifically 003001
+    ("insufficient privileges ... must have usage granted") is an ordinary
+    permission-denied result, not an auth failure, and is skipped the same
+    way a 403 would be.
+
+    Confirmed against a real account (2026-10-16): one
+    `DROPPED_USER$<user>_<epoch>` placeholder database (the unquoted-looking
+    form with no `@`/domain suffix, as distinct from the quoted form that
+    triggers the 400/002043 case) answered exactly this 401/003001 shape.
+    """
+    # Arrange
+    caplog.set_level(logging.WARNING, logger="cartography.intel.snowflake.schemas")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            _respond_json(
+                self,
+                {
+                    "code": "003001",
+                    "message": (
+                        "sql access control error:\ninsufficient privileges to "
+                        "operate on database 'dropped_user$test_user_123'. your "
+                        "primary role is_cartography or one of your secondary "
+                        "roles must have usage granted on database "
+                        "dropped_user$test_user_123."
+                    ),
+                },
+                status=401,
+            )
+
+        def log_message(self, format, *args):
+            pass
+
+    server = _serve(Handler)
+    client = _build_client(server.server_port)
+    try:
+        # Act
+        result = get_database_schemas(client, "DROPPED_USER$TEST_USER_123")
+    finally:
+        _shutdown(server)
+
+    # Assert
+    assert result is None
+    assert "Snowflake error 003001:" in caplog.text
+
+
+def test_database_schema_listing_401_other_reason_still_fails():
+    """A 401 that is NOT the specific 003001 insufficient-privileges case must
+    still fail the whole sync. This is the safety boundary the narrow check
+    exists for: Snowflake documents 401 for real authentication failures too
+    (390144 "JWT token is invalid.", 390432 "Network policy is required."),
+    which would make EVERY database answer 401 if the credential itself were
+    broken - a blanket 401 skip would silently "complete" a sync that read
+    nothing. Confirmed by checking the error code, not just the HTTP status.
+    """
+
+    # Arrange
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            _respond_json(
+                self,
+                {"code": "390144", "message": "JWT token is invalid. null"},
+                status=401,
+            )
+
+        def log_message(self, format, *args):
+            pass
+
+    server = _serve(Handler)
+    client = _build_client(server.server_port)
+    try:
+        # Act / Assert
+        with pytest.raises(requests.HTTPError):
+            get_database_schemas(client, "SOME_DB")
+    finally:
+        _shutdown(server)
+
+
+def test_database_schema_listing_401_without_json_body_still_fails():
+    """A 401 with a non-JSON or empty body cannot be confirmed as the
+    insufficient-privileges case and must still fail loudly rather than be
+    assumed safe to skip.
+    """
+
+    # Arrange
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"not json"
+            self.send_response(401)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def log_message(self, format, *args):
             pass

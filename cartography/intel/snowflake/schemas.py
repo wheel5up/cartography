@@ -10,6 +10,18 @@ quoting on this endpoint - which is the same "object does not exist, or operatio
 cannot be performed" (Snowflake error 002043) class of failure
 ``list_schema_objects`` already tolerates for schema-scoped listings one level
 down. See that function's docstring in ``util.py`` for the sibling case.
+
+A narrower third case is also tolerated: a 401 whose Snowflake error code is
+specifically 003001 ("insufficient privileges ... must have USAGE granted"),
+which is an ordinary permission-denied result that happens to map to 401
+instead of 403 on this one endpoint shape. This is deliberately NOT a blanket
+401 skip - Snowflake's own docs (390144 "JWT token is invalid", 390432
+"Network policy is required.") document 401 as the status for real
+authentication failures too. A bad credential would make every database
+answer 401; blanket-skipping all of them would silently "complete" a sync
+that read nothing, exactly the kind of failure this repo's own STATUS.md
+documents a real production incident for. Checking the specific error code
+keeps the skip scoped to the one confirmed-safe case.
 """
 
 import logging
@@ -42,8 +54,40 @@ logger = logging.getLogger(__name__)
 # because the embedded `@`/`.`/`$` characters in its name break REST identifier
 # quoting rather than signal a real permission gap. Matches the schema-level
 # precedent in `list_schema_objects`/`SCHEMA_LISTING_SKIPPABLE_STATUSES` one
-# level down - same root cause, different addressing layer.
+# level down - same root cause, different addressing layer. 401 is
+# DELIBERATELY excluded from this blanket set - see
+# _is_skippable_insufficient_privileges_401 for the narrower, code-checked
+# case that covers it instead.
 _DATABASE_SCHEMA_LISTING_SKIPPABLE_STATUSES = (400, 403, 404)
+
+# Snowflake's error code for "the connecting role lacks USAGE on this
+# database" - confirmed via a real account (2026-10-16): one
+# `DROPPED_USER$<user>_<epoch>` placeholder database (no `@`/domain suffix,
+# unlike the quoted form that triggers the 400 case above) answered
+# `401 {"code": "003001", "message": "sql access control error:\ninsufficient
+# privileges to operate on database '...'. your primary role ... must have
+# usage granted on database ..."}` - a real, ordinary permission-denied
+# result on this account, not an auth failure.
+_INSUFFICIENT_PRIVILEGES_ERROR_CODE = "003001"
+
+
+def _is_skippable_insufficient_privileges_401(error: requests.HTTPError) -> bool:
+    """Whether a 401 is Snowflake's USAGE-privilege error, not an auth failure.
+
+    Deliberately narrow: checks the Snowflake-specific error code in the
+    response body, not just the HTTP status. See this module's docstring for
+    why a blanket 401 skip is unsafe (390144 "JWT token is invalid" and 390432
+    "Network policy is required." are real upstream-documented 401 cases that
+    must still fail the sync loudly).
+    """
+    response = error.response
+    if response is None or response.status_code != 401:
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return body.get("code") == _INSUFFICIENT_PRIVILEGES_ERROR_CODE
 
 
 @timeit
@@ -56,7 +100,8 @@ def get_database_schemas(
             f"/api/v2/databases/{sf_path_segment(database_name)}/schemas"
         )
     except requests.HTTPError as error:
-        skip_or_raise_http(error, *_DATABASE_SCHEMA_LISTING_SKIPPABLE_STATUSES)
+        if not _is_skippable_insufficient_privileges_401(error):
+            skip_or_raise_http(error, *_DATABASE_SCHEMA_LISTING_SKIPPABLE_STATUSES)
         logger.warning(
             "Cannot list schemas of Snowflake database %s (%s); its contents "
             "will be missing from the graph.",
