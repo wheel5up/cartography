@@ -93,7 +93,11 @@ dependencies = [
     "python-dateutil>=2.9.0",
     "xmltodict>=1.0.0",
     "duo-client>=5.5.0",
-    "cloudflare>=4.1.0",
+    "cloudflare==5.7.0",  # pinned: 5.8.0 renamed r2.buckets' `jurisdiction` kwarg to
+    # `cf_r2_jurisdiction`, breaking cartography/intel/cloudflare/r2buckets.py (see
+    # cartography-deploy's root README "Audit all dependency pinning" TODO, 2026-10-19).
+    # Upstream fix tracked at cartography-cncf/cartography#3425 (open, not yet merged);
+    # bump this pin once that merges and is verified against a real account.
     "scaleway>=2.12.0",
     "google-cloud-resource-manager>=1.14.2",
     "google-cloud-asset>=1.0.0",
