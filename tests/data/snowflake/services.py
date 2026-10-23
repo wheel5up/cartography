@@ -53,6 +53,32 @@ SNOWFLAKE_SERVICES: list[dict[str, Any]] = [
         "comment": None,
         "created_on": "2026-08-03T18:02:00.000+00:00",
     },
+    # A suspended service. Per Snowflake's documented SHOW SERVICE CONTAINERS
+    # IN SERVICE contract, a service with no containers currently running
+    # (SUSPENDED or PENDING) still returns exactly one row with
+    # container_name/instance_id and all container-specific fields as NULL --
+    # see SNOWFLAKE_CONTAINERS_BY_SERVICE below.
+    {
+        "name": "SQUISHEE_DISPENSER",
+        "database_name": "SPRINGFIELD",
+        "schema_name": "NUCLEAR_PLANT",
+        "status": "SUSPENDED",
+        "compute_pool": "MONORAIL_POOL",
+        "spec_digest": "sha256:cccc",
+        "dns_name": None,
+        "current_instances": 0,
+        "target_instances": 0,
+        "min_instances": 1,
+        "max_instances": 1,
+        "auto_resume": True,
+        "external_access_integrations": [],
+        "query_warehouse": None,
+        "is_job": False,
+        "is_upgrading": False,
+        "owner": "APU",
+        "comment": None,
+        "created_on": "2026-08-03T18:03:00.000+00:00",
+    },
 ]
 
 SNOWFLAKE_CONTAINERS_BY_SERVICE: dict[str, Any] = {
@@ -85,6 +111,22 @@ SNOWFLAKE_CONTAINERS_BY_SERVICE: dict[str, Any] = {
         },
     ],
     "DONUT_BACKFILL": [],
+    # The documented SUSPENDED/PENDING placeholder row: every field other than
+    # service-level identity (not present in this per-container row at all)
+    # comes back NULL. transform() must skip this row rather than building a
+    # bogus container node from it (or crashing on sf_fqn(None)).
+    "SQUISHEE_DISPENSER": [
+        {
+            "container_name": None,
+            "instance_id": None,
+            "status": None,
+            "image_name": None,
+            "image_digest": None,
+            "restart_count": None,
+            "start_time": None,
+            "message": None,
+        },
+    ],
 }
 
 SNOWFLAKE_ENDPOINTS_BY_SERVICE: dict[str, Any] = {
@@ -108,6 +150,7 @@ SNOWFLAKE_ENDPOINTS_BY_SERVICE: dict[str, Any] = {
         },
     ],
     "DONUT_BACKFILL": [],
+    "SQUISHEE_DISPENSER": [],
 }
 
 SNOWFLAKE_SERVICE_ROLES_BY_SERVICE: dict[str, Any] = {
@@ -118,4 +161,5 @@ SNOWFLAKE_SERVICE_ROLES_BY_SERVICE: dict[str, Any] = {
         },
     ],
     "DONUT_BACKFILL": [],
+    "SQUISHEE_DISPENSER": [],
 }

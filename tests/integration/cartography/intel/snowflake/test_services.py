@@ -42,6 +42,9 @@ MONORAIL_SERVICE_ID = (
     "SPRINGFIELD.NUCLEAR/service/SPRINGFIELD.NUCLEAR_PLANT.MONORAIL_TELEMETRY"
 )
 DONUT_JOB_ID = "SPRINGFIELD.NUCLEAR/service/SPRINGFIELD.NUCLEAR_PLANT.DONUT_BACKFILL"
+SQUISHEE_SERVICE_ID = (
+    "SPRINGFIELD.NUCLEAR/service/SPRINGFIELD.NUCLEAR_PLANT.SQUISHEE_DISPENSER"
+)
 TELEMETRY_CONTAINER_0_ID = (
     "SPRINGFIELD.NUCLEAR/service_container/"
     'SPRINGFIELD.NUCLEAR_PLANT.MONORAIL_TELEMETRY."telemetry"#0'
@@ -114,6 +117,14 @@ def test_sync_snowflake_services(mock_get, neo4j_session):
             "REACTOR_WH",
         ),
         (DONUT_JOB_ID, "DONUT_BACKFILL", "DONE", "MONORAIL_POOL", True, None),
+        (
+            SQUISHEE_SERVICE_ID,
+            "SQUISHEE_DISPENSER",
+            "SUSPENDED",
+            "MONORAIL_POOL",
+            False,
+            None,
+        ),
     }
     assert check_nodes(neo4j_session, "ComputeService", ["id"]) >= {
         (MONORAIL_SERVICE_ID,),
@@ -143,6 +154,20 @@ def test_sync_snowflake_services(mock_get, neo4j_session):
         ),
     }
     assert check_nodes(neo4j_session, "Container", ["id"]) >= {
+        (TELEMETRY_CONTAINER_0_ID,),
+        (TELEMETRY_CONTAINER_1_ID,),
+    }
+    # SQUISHEE_DISPENSER is SUSPENDED, so its containers sub-listing is the
+    # documented single placeholder row (container_name=NULL etc, see
+    # tests/data/snowflake/services.py). transform() must skip it rather than
+    # building a bogus container node (or crashing on sf_fqn(None)) -- so the
+    # total container count is exactly the two MONORAIL_TELEMETRY instances,
+    # nothing from SQUISHEE_DISPENSER.
+    assert check_nodes(
+        neo4j_session,
+        "SnowflakeServiceContainer",
+        ["id"],
+    ) == {
         (TELEMETRY_CONTAINER_0_ID,),
         (TELEMETRY_CONTAINER_1_ID,),
     }
@@ -177,6 +202,7 @@ def test_sync_snowflake_services(mock_get, neo4j_session):
     ) == {
         (MONORAIL_SERVICE_ID, NUCLEAR_PLANT_SCHEMA_ID),
         (DONUT_JOB_ID, NUCLEAR_PLANT_SCHEMA_ID),
+        (SQUISHEE_SERVICE_ID, NUCLEAR_PLANT_SCHEMA_ID),
     }
     # The canonical workload chain: container -> service -> compute pool.
     assert check_rels(
@@ -202,6 +228,7 @@ def test_sync_snowflake_services(mock_get, neo4j_session):
     ) == {
         (MONORAIL_SERVICE_ID, MONORAIL_POOL_ID),
         (DONUT_JOB_ID, MONORAIL_POOL_ID),
+        (SQUISHEE_SERVICE_ID, MONORAIL_POOL_ID),
     }
     # The query warehouse is a data-plane dependency, distinct from the pool that
     # schedules the containers.
