@@ -46,6 +46,10 @@ class AWSInspectorNodeProperties(CartographyNodeProperties):
         "ecrrepositoryid",
         description="Identifier of the ecrrepositoryid linked to this `AWSInspectorFinding` node.",
     )
+    lambdaid: PropertyRef = PropertyRef(
+        "lambdaid",
+        description="Unqualified ARN of the AWS Lambda function linked to this `AWSInspectorFinding` node.",
+    )
     severity: PropertyRef = PropertyRef(
         "severity",
         description="Inspector severity assigned to the finding.",
@@ -257,6 +261,24 @@ class InspectorFindingToECRImageRel(CartographyRelSchema):
 
 
 @dataclass(frozen=True)
+class InspectorFindingToLambdaFunctionRelRelProperties(CartographyRelProperties):
+    lastupdated: PropertyRef = PropertyRef("lastupdated", set_in_kwargs=True)
+
+
+@dataclass(frozen=True)
+class InspectorFindingToLambdaFunctionRel(CartographyRelSchema):
+    target_node_label: str = "AWSLambdaFunction"
+    target_node_matcher: TargetNodeMatcher = make_target_node_matcher(
+        {"id": PropertyRef("lambdaid")},
+    )
+    direction: LinkDirection = LinkDirection.OUTWARD
+    rel_label: str = "AFFECTS"
+    properties: InspectorFindingToLambdaFunctionRelRelProperties = (
+        InspectorFindingToLambdaFunctionRelRelProperties()
+    )
+
+
+@dataclass(frozen=True)
 class InspectorFindingToPackageRelRelProperties(CartographyRelProperties):
     lastupdated: PropertyRef = PropertyRef("lastupdated", set_in_kwargs=True)
     _sub_resource_label: PropertyRef = PropertyRef(
@@ -335,6 +357,7 @@ class AWSInspectorFindingSchema(CartographyNodeSchema):
             # TODO: Fix AWSECRRepository and AWSECRImage relationships
             InspectorFindingToECRRepositoryRel(),
             InspectorFindingToECRImageRel(),
+            InspectorFindingToLambdaFunctionRel(),
             InspectorFindingToAWSAccountRelDelegateRel(),
         ],
     )

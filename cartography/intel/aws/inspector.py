@@ -198,6 +198,17 @@ def transform_inspector_findings(
             finding["ecrimageid"] = f["resources"][0]["id"].split("/")[2]
         if f["resources"][0]["type"] == "AWS_ECR_REPOSITORY":
             finding["ecrrepositoryid"] = f["resources"][0]["id"]
+        if f["resources"][0]["type"] == "AWS_LAMBDA_FUNCTION":
+            # Inspector's resource id for a Lambda finding is the function ARN
+            # with a `:$LATEST` (or, in principle, a numeric version/alias)
+            # qualifier suffix appended -- e.g.
+            # arn:aws:lambda:us-east-1:123456789012:function:my-func:$LATEST.
+            # cartography's AWSLambdaFunction node id/arn is the bare,
+            # unqualified FunctionArn (see
+            # cartography/models/aws/lambda_function/lambda_function.py), so
+            # strip any qualifier here or the AFFECTS relationship below will
+            # never match an existing node.
+            finding["lambdaid"] = _strip_lambda_arn_qualifier(f["resources"][0]["id"])
         if f.get("networkReachabilityDetails"):
             finding["protocol"] = f["networkReachabilityDetails"]["protocol"]
             finding["portrangebegin"] = f["networkReachabilityDetails"][
@@ -287,6 +298,22 @@ def _port_range_string(details: Dict[str, Any]) -> str:
     begin = details["openPortRange"]["begin"]
     end = details["openPortRange"]["end"]
     return f"{begin}-{end}"
+
+
+def _strip_lambda_arn_qualifier(resource_id: str) -> str:
+    """
+    Strip an optional version/alias qualifier from a Lambda function ARN.
+
+    A standard, unqualified Lambda function ARN has exactly 7 colon-delimited
+    segments: arn:aws:lambda:<region>:<account-id>:function:<name>. Inspector's
+    finding resource id may append an 8th ":<qualifier>" segment (observed in
+    production as always ":$LATEST", but numeric versions and aliases are also
+    valid per the inspector2 ResourceId pattern). Truncate back down to the
+    unqualified ARN so it matches AWSLambdaFunction.id/arn, which cartography's
+    lambda_function module always populates from the unqualified FunctionArn.
+    """
+    parts = resource_id.split(":")
+    return ":".join(parts[:7])
 
 
 @timeit

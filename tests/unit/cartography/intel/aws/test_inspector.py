@@ -2,6 +2,7 @@ from datetime import datetime
 
 from cartography.intel.aws.inspector import transform_inspector_findings
 from tests.data.aws.inspector import LIST_FINDINGS_EC2_PACKAGE
+from tests.data.aws.inspector import LIST_FINDINGS_LAMBDA_PACKAGE
 from tests.data.aws.inspector import LIST_FINDINGS_NETWORK
 
 TEST_UPDATE_TAG = 123456789
@@ -193,4 +194,19 @@ def test_transform_inspector_findings_package():
     assert sorted_finding_to_package_map == sorted(
         expected_finding_to_package_map,
         key=lambda i: (i["findingarn"], i["packageid"]),
+    )
+
+
+def test_transform_inspector_findings_lambda_strips_qualifier():
+    findings, _packages, _finding_to_package_map = transform_inspector_findings(
+        LIST_FINDINGS_LAMBDA_PACKAGE
+    )
+    assert len(findings) == 1
+    # Inspector's resource id carries a `:$LATEST` qualifier that cartography's
+    # AWSLambdaFunction node (populated from the unqualified FunctionArn) does
+    # not have; transform_inspector_findings must strip it so the AFFECTS
+    # relationship can match.
+    assert (
+        findings[0]["lambdaid"]
+        == "arn:aws:lambda:us-east-1:123456789012:function:phone-type"
     )
