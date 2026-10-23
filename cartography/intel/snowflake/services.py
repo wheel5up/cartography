@@ -206,6 +206,16 @@ def transform(
 
         for container in bundle["containers"]:
             container_name = container["container_name"]
+            if container_name is None:
+                # Per Snowflake's documented SHOW SERVICE CONTAINERS IN SERVICE
+                # contract: a service in SUSPENDED or PENDING state (i.e. no
+                # containers currently running) still returns exactly one row,
+                # with container_name/instance_id/all container-specific fields
+                # as NULL, rather than an empty result set. This is a
+                # placeholder row describing "no containers," not a real
+                # container -- skip it rather than building a bogus node from
+                # it (and, before this guard, raising inside sf_fqn(None)).
+                continue
             instance_id = str(container["instance_id"])
             containers.append(
                 {
