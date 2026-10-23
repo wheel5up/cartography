@@ -291,3 +291,91 @@ LIST_FINDINGS_EC2_PACKAGE = [
         "updatedAt": datetime(2022, 5, 4, 16, 23, 3, 692000),
     },
 ]
+
+LIST_FINDINGS_LAMBDA_PACKAGE = [
+    {
+        "awsAccountId": "123456789012",
+        "description": "HTTP and MIME header parsing can allocate large amounts "
+        "of memory, even when parsing small inputs, potentially leading to a "
+        "denial of service.",
+        "epss": {
+            "score": 0.01888,
+        },
+        "exploitAvailable": "NO",
+        "findingArn": "arn:aws:test-lambda-1",
+        "firstObservedAt": datetime(2022, 5, 4, 16, 23, 3, 692000),
+        "fixAvailable": "YES",
+        "inspectorScore": 7.5,
+        "inspectorScoreDetails": {
+            "adjustedCvss": {
+                "adjustments": [],
+                "cvssSource": "NVD",
+                "score": 7.5,
+                "scoreSource": "NVD",
+                "scoringVector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+                "version": "3.1",
+            },
+        },
+        "lastObservedAt": datetime(2022, 5, 4, 16, 23, 3, 692000),
+        "packageVulnerabilityDetails": {
+            "cvss": [
+                {
+                    "baseScore": 7.5,
+                    "scoringVector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+                    "source": "NVD",
+                    "version": "3.1",
+                },
+            ],
+            "referenceUrls": [
+                "https://nvd.nist.gov/vuln/detail/CVE-2023-24534",
+            ],
+            "relatedVulnerabilities": [],
+            "source": "NVD",
+            "sourceUrl": "https://nvd.nist.gov/vuln/detail/CVE-2023-24534",
+            "vendorCreatedAt": datetime(2023, 4, 6, 11, 15, 7),
+            "vendorSeverity": "HIGH",
+            "vulnerabilityId": "CVE-2023-24534",
+            "vulnerablePackages": [
+                {
+                    "name": "go/stdlib",
+                    "version": "1.16.8",
+                    "epoch": 0,
+                    "packageManager": "GENERIC",
+                    "filePath": "main",
+                    "fixedInVersion": "1.20.3",
+                },
+            ],
+        },
+        "remediation": {"recommendation": {"text": "None Provided"}},
+        "resources": [
+            {
+                "details": {
+                    "awsLambdaFunction": {
+                        "functionName": "phone-type",
+                        "runtime": "GO_1_X",
+                        "codeSha256": "gtSule1S6Vmg0yCJ7G5m+Sb8GmileqjFcKRGXytxOH8=",
+                        "version": "$LATEST",
+                        "executionRoleArn": "arn:aws:iam::123456789012:role/lambda-phone-type",
+                        "layers": [],
+                        "packageType": "ZIP",
+                        "architectures": ["X86_64"],
+                        "lastModifiedAt": datetime(2022, 5, 4, 16, 15, 41),
+                    },
+                },
+                # Inspector appends a `:$LATEST` qualifier to the function ARN;
+                # the unqualified ARN (what AWSLambdaFunction.id/arn stores) is
+                # everything up to and including `:function:<name>`.
+                "id": "arn:aws:lambda:us-east-1:123456789012:function:phone-type:$LATEST",
+                "partition": "aws",
+                "region": "us-east-1",
+                "tags": {},
+                "type": "AWS_LAMBDA_FUNCTION",
+            },
+        ],
+        "severity": "HIGH",
+        "status": "ACTIVE",
+        "title": "CVE-2023-24534 - go/stdlib",
+        "type": "PACKAGE_VULNERABILITY",
+        "updatedAt": datetime(2022, 5, 4, 16, 23, 3, 692000),
+    },
+]

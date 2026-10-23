@@ -8,6 +8,7 @@ from cartography.intel.aws.inspector import _sync_findings_for_account
 from cartography.intel.aws.inspector import BATCH_SIZE
 from cartography.intel.aws.inspector import sync
 from tests.data.aws.inspector import LIST_FINDINGS_EC2_PACKAGE
+from tests.data.aws.inspector import LIST_FINDINGS_LAMBDA_PACKAGE
 from tests.data.aws.inspector import LIST_FINDINGS_NETWORK
 from tests.integration.util import check_nodes
 from tests.integration.util import check_rels
@@ -252,6 +253,73 @@ def test_sync_inspector_ec2_package_findings(mock_get, neo4j_session):
     assert vendorcvssscores_by_id == {
         "arn:aws:test456": [5.5, 4.9, 5.5],
         "arn:aws:test789": [7.5],
+    }
+
+
+@patch.object(
+    cartography.intel.aws.inspector,
+    "get_inspector_findings",
+    return_value=[LIST_FINDINGS_LAMBDA_PACKAGE],
+)
+def test_sync_inspector_lambda_package_findings(mock_get, neo4j_session):
+    # Arrange
+    boto3_session = MagicMock()
+    neo4j_session.run("MATCH (n) DETACH DELETE n")
+    neo4j_session.run(
+        """
+        MERGE (:AWSAccount{id: '123456789012'})
+        """,
+    )
+    # The AWSLambdaFunction node's id/arn is the unqualified FunctionArn (no
+    # `:$LATEST` suffix) -- matching how cartography's own lambda_function
+    # module populates it from boto3's list_functions.
+    neo4j_session.run(
+        """
+        MERGE (:AWSLambdaFunction{
+            id: 'arn:aws:lambda:us-east-1:123456789012:function:phone-type',
+            arn: 'arn:aws:lambda:us-east-1:123456789012:function:phone-type'
+        })
+        """,
+    )
+
+    # Act
+    sync(
+        neo4j_session,
+        boto3_session,
+        [TEST_REGION],
+        TEST_ACC_ID_2,
+        TEST_UPDATE_TAG,
+        {"UPDATE_TAG": TEST_UPDATE_TAG, "AWS_ID": TEST_ACC_ID_2},
+    )
+
+    # Assert: the finding's qualified Inspector resource id was stripped down
+    # to the unqualified ARN and matched against the existing AWSLambdaFunction
+    # node.
+    assert check_rels(
+        neo4j_session,
+        "AWSInspectorFinding",
+        "id",
+        "AWSLambdaFunction",
+        "id",
+        "AFFECTS",
+        rel_direction_right=True,
+    ) == {
+        (
+            "arn:aws:test-lambda-1",
+            "arn:aws:lambda:us-east-1:123456789012:function:phone-type",
+        ),
+    }
+
+    assert check_rels(
+        neo4j_session,
+        "AWSAccount",
+        "id",
+        "AWSInspectorFinding",
+        "id",
+        "RESOURCE",
+        rel_direction_right=True,
+    ) == {
+        ("123456789012", "arn:aws:test-lambda-1"),
     }
 
 
