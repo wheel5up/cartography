@@ -43,9 +43,47 @@ def matches_any(name: str, patterns: frozenset[str] | tuple[str, ...]) -> bool:
     Case-insensitive for the same reason as the allowlist: Snowflake upper-cases
     an unquoted identifier but preserves a quoted one, and an operator writing a
     skip pattern has no way to say which they meant.
+
+    Snowflake also reports some names wrapped in literal double quotes - e.g.
+    ``"DROPPED_USER$AHENDERSON@G2.COM_1788162201"`` (confirmed on a real account,
+    2026-10-28; any name containing ``@`` comes back this way). Each pattern is
+    tried against the name both as reported and with one pair of surrounding
+    quotes stripped, so an anchored pattern like ``DROPPED_USER$*`` still matches.
+    For a dotted ``DATABASE.SCHEMA`` the stripping applies per component.
     """
-    folded = name.casefold()
-    return any(fnmatchcase(folded, pattern.casefold()) for pattern in patterns)
+    candidates = {name.casefold(), _unquote_dotted(name).casefold()}
+    return any(
+        fnmatchcase(candidate, pattern.casefold())
+        for pattern in patterns
+        for candidate in candidates
+    )
+
+
+def _unquote(part: str) -> str:
+    if len(part) >= 2 and part[0] == '"' and part[-1] == '"':
+        return part[1:-1]
+    return part
+
+
+def _unquote_dotted(name: str) -> str:
+    """Strip one pair of surrounding quotes from each dot-separated component.
+
+    Only splits on dots outside quotes, so a quoted component containing a dot
+    (``"A@G2.COM_X"``) stays one component.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    for char in name:
+        if char == '"':
+            in_quotes = not in_quotes
+        if char == "." and not in_quotes:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    parts.append("".join(current))
+    return ".".join(_unquote(part) for part in parts)
 
 
 @timeit
