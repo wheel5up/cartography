@@ -738,6 +738,75 @@ class SnowflakeClient:
         return properties
 
 
+# Snowflake's error code for a SHOW whose unbounded result exceeds the row cap
+# ("the result set size exceeded the max number of rows(10000) supported for show
+# statements"), seen on a real account (2026-10-28) listing tables of a schema
+# holding more than 10,000 of them. LIMIT cannot exceed the same cap.
+_SHOW_ROW_LIMIT_ERROR_CODE = "090153"
+SHOW_ROW_LIMIT = 10000
+# Hard stop on the chunk loop: 1,000 chunks is ten million objects in one schema.
+_MAX_SHOW_CHUNKS = 1000
+
+
+def snowflake_error_code(error: requests.HTTPError) -> str | None:
+    """Snowflake's own error code from a failed response body, if present."""
+    response = error.response
+    if response is None:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    code = body.get("code")
+    return str(code) if code is not None else None
+
+
+def _list_in_chunks(client: SnowflakeClient, path: str) -> list[dict[str, Any]]:
+    """List a collection too large for one SHOW, ``SHOW_ROW_LIMIT`` rows at a time.
+
+    ``showLimit``/``fromName`` map to ``SHOW ... LIMIT n FROM 'name'``. Rows come
+    back in name order and ``FROM`` starts at the first name matching the string,
+    inclusive, so each chunk starts at the last name of the previous one and that
+    row is dropped as a duplicate. The loop ends on a short chunk. A chunk that
+    adds nothing new means the cursor cannot advance; that raises rather than
+    returning a partial listing, because the caller would then report the
+    collection complete and cleanup would delete everything past the cutoff.
+
+    Each chunk is still fetched through ``list_all`` so ``Link`` pagination within
+    a chunk is honoured.
+    """
+    results: list[dict[str, Any]] = []
+    seen: set[str | None] = set()
+    from_name: str | None = None
+    for _ in range(_MAX_SHOW_CHUNKS):
+        params: dict[str, Any] = {"showLimit": SHOW_ROW_LIMIT}
+        if from_name is not None:
+            params["fromName"] = from_name
+        chunk = client.list_all(path, params=params)
+        new_rows = [row for row in chunk if row.get("name") not in seen]
+        for row in new_rows:
+            seen.add(row.get("name"))
+        results.extend(new_rows)
+        if len(chunk) < SHOW_ROW_LIMIT:
+            return results
+        if not new_rows:
+            raise RuntimeError(
+                f"Snowflake chunked listing of {path} stopped advancing at "
+                f"{from_name!r}; refusing to return a partial result.",
+            )
+        from_name = chunk[-1].get("name")
+        if not from_name:
+            raise RuntimeError(
+                f"Snowflake chunked listing of {path} returned a row without a "
+                "name; cannot continue the cursor.",
+            )
+    raise RuntimeError(
+        f"Snowflake chunked listing of {path} exceeded {_MAX_SHOW_CHUNKS} chunks.",
+    )
+
+
 def list_schema_objects(
     client: SnowflakeClient,
     database_name: str,
@@ -756,13 +825,28 @@ def list_schema_objects(
     A 400 is not retried: it is also how Snowflake reports a schema that stays
     unlistable, where a retry only adds a round trip per schema per collection, and
     skipping costs no more than one run's freshness for that schema.
+
+    The one 400 that is handled is 090153: the underlying ``SHOW`` refuses an
+    unbounded result over 10,000 rows. That collection is re-read in chunks; see
+    ``_list_in_chunks``.
     """
+    path = (
+        f"/api/v2/databases/{sf_path_segment(database_name)}"
+        f"/schemas/{sf_path_segment(schema_name)}/{collection}"
+    )
     try:
-        return client.list_all(
-            f"/api/v2/databases/{sf_path_segment(database_name)}"
-            f"/schemas/{sf_path_segment(schema_name)}/{collection}",
-        )
+        return client.list_all(path)
     except requests.HTTPError as error:
+        if snowflake_error_code(error) == _SHOW_ROW_LIMIT_ERROR_CODE:
+            logger.info(
+                "Snowflake %s of schema %s.%s exceed the %d-row SHOW limit; "
+                "listing in chunks.",
+                collection,
+                database_name,
+                schema_name,
+                SHOW_ROW_LIMIT,
+            )
+            return _list_in_chunks(client, path)
         skip_or_raise_http(error, *SCHEMA_LISTING_SKIPPABLE_STATUSES)
         logger.warning(
             "Cannot list %s of Snowflake schema %s.%s (%s); they will be missing "

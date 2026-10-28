@@ -7,6 +7,7 @@ logged, rather than producing a wall of 403 warnings downstream.
 """
 
 import logging
+from fnmatch import fnmatchcase
 from typing import Any
 
 import neo4j
@@ -29,6 +30,23 @@ logger = logging.getLogger(__name__)
 # not have.
 DEFAULT_SKIPPED_DATABASES = frozenset({"SNOWFLAKE", "SNOWFLAKE_SAMPLE_DATA"})
 
+# Snowflake creates a `DROPPED_USER$<user>_<epoch>` placeholder database when a
+# user who owned objects is dropped. It cannot be addressed through the REST API
+# (400/002043, "object does not exist"), so walking it can only ever mark the
+# schema walk incomplete and block cleanup account-wide. Not customer data either.
+DEFAULT_SKIPPED_DATABASE_PATTERNS = ("DROPPED_USER$*",)
+
+
+def matches_any(name: str, patterns: frozenset[str] | tuple[str, ...]) -> bool:
+    """Case-insensitive shell-style match of ``name`` against any pattern.
+
+    Case-insensitive for the same reason as the allowlist: Snowflake upper-cases
+    an unquoted identifier but preserves a quoted one, and an operator writing a
+    skip pattern has no way to say which they meant.
+    """
+    folded = name.casefold()
+    return any(fnmatchcase(folded, pattern.casefold()) for pattern in patterns)
+
 
 @timeit
 def get(client: SnowflakeClient) -> list[dict[str, Any]]:
@@ -36,15 +54,29 @@ def get(client: SnowflakeClient) -> list[dict[str, Any]]:
     return client.list_all("/api/v2/databases")
 
 
-def _skip_walk_reason(database: dict[str, Any], allowed: set[str] | None) -> str | None:
+def _skip_walk_reason(
+    database: dict[str, Any],
+    allowed: set[str] | None,
+    skipped: frozenset[str] = frozenset(),
+) -> str | None:
     """Why this database's schemas should not be walked, or None to walk it.
 
     This gates the *walk*, not the inventory. Every database is still loaded as a
     node, because a database mounted from an inbound share is a security-relevant
     fact in its own right: it is external data arriving in the account, and
     dropping it would hide that. Only the descent into its schemas is skipped.
+
+    ``skipped`` is an operator-supplied set of shell-style patterns. It is checked
+    before the allowlist, so a database matched by both is skipped. A skipped
+    database is deliberately out of scope rather than unreadable, so it does not
+    mark the walk incomplete: cleanup still runs, and anything previously
+    collected under it is removed.
     """
     name = database["name"]
+    if skipped and matches_any(name, skipped):
+        return "it matches the configured database skip list"
+    if matches_any(name, DEFAULT_SKIPPED_DATABASE_PATTERNS):
+        return "it is a Snowflake-generated placeholder for a dropped user"
     if allowed is not None:
         # An explicit allowlist is exhaustive, so an operator can deliberately
         # include Snowflake's own databases or a shared one.
@@ -134,6 +166,7 @@ def sync(
     client: SnowflakeClient,
     allowed_databases: set[str] | None,
     common_job_parameters: dict,
+    skipped_databases: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]], bool]:
     """Sync every database, returning only the ones whose schemas should be walked.
 
@@ -159,7 +192,9 @@ def sync(
     )
 
     skip_reasons = {
-        database["name"]: _skip_walk_reason(database, allowed_databases)
+        database["name"]: _skip_walk_reason(
+            database, allowed_databases, skipped_databases
+        )
         for database in raw_databases
     }
     for name, reason in skip_reasons.items():

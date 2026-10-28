@@ -2122,6 +2122,24 @@ class CLI:
                     hidden=PANEL_SNOWFLAKE not in visible_panels,
                 ),
             ] = None,
+            snowflake_skip_databases: Annotated[
+                str | None,
+                typer.Option(
+                    "--snowflake-skip-databases",
+                    help="Comma-separated shell-style patterns of Snowflake databases not to walk. Matched databases are still inventoried and do not block cleanup.",
+                    rich_help_panel=PANEL_SNOWFLAKE,
+                    hidden=PANEL_SNOWFLAKE not in visible_panels,
+                ),
+            ] = None,
+            snowflake_skip_schemas: Annotated[
+                str | None,
+                typer.Option(
+                    "--snowflake-skip-schemas",
+                    help="Comma-separated shell-style patterns matched against DATABASE.SCHEMA. Matched schemas are inventoried but not walked and do not block cleanup.",
+                    rich_help_panel=PANEL_SNOWFLAKE,
+                    hidden=PANEL_SNOWFLAKE not in visible_panels,
+                ),
+            ] = None,
             # =================================================================
             # Docker Scout Options
             # =================================================================
@@ -4100,6 +4118,8 @@ class CLI:
                 snowflake_role=snowflake_role,
                 snowflake_warehouse=snowflake_warehouse,
                 snowflake_databases=snowflake_databases,
+                snowflake_skip_databases=snowflake_skip_databases,
+                snowflake_skip_schemas=snowflake_skip_schemas,
                 # Forward the user-provided values (not resolved). Config calls
                 # resolve_report_source_with_legacy_fields() internally; the CLI's
                 # _resolve_report_source_option above runs the same logic for early

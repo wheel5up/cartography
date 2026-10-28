@@ -29,6 +29,7 @@ import requests
 
 from cartography.client.core.tx import load
 from cartography.graph.job import GraphJob
+from cartography.intel.snowflake.databases import matches_any
 from cartography.intel.snowflake.util import http_error_detail
 from cartography.intel.snowflake.util import is_insufficient_privileges_401
 from cartography.intel.snowflake.util import iso_to_datetime
@@ -94,6 +95,45 @@ def get(
             continue
         schemas.extend(rows)
     return schemas, complete
+
+
+def is_skipped_schema(schema: dict[str, Any], skipped: frozenset[str]) -> bool:
+    """Whether a schema matches the operator's skip list.
+
+    Patterns are shell-style and matched case-insensitively against
+    ``DATABASE.SCHEMA``, using the names exactly as Snowflake reports them (no
+    identifier quoting), so ``SNOWFLAKE_LEARNING_DB.*@*`` or ``GDC.SIGMA`` work as
+    written. A schema whose name itself contains quote characters is matched on
+    those characters too; use ``*`` to cover them.
+    """
+    if not skipped:
+        return False
+    return matches_any(f"{schema['database_name']}.{schema['name']}", skipped)
+
+
+def walkable(
+    schemas: list[dict[str, Any]], skipped: frozenset[str]
+) -> list[dict[str, Any]]:
+    """The schemas the object-level syncs should descend into.
+
+    A skipped schema is still loaded as a node; only the descent is suppressed. It
+    is deliberately out of scope, not unreadable, so it does not mark any walk
+    incomplete, and objects previously collected under it are cleaned up.
+    """
+    if not skipped:
+        return schemas
+    kept: list[dict[str, Any]] = []
+    for schema in schemas:
+        if is_skipped_schema(schema, skipped):
+            logger.info(
+                "Not walking Snowflake schema %s.%s: it matches the configured "
+                "schema skip list.",
+                schema["database_name"],
+                schema["name"],
+            )
+            continue
+        kept.append(schema)
+    return kept
 
 
 def transform(schemas: list[dict[str, Any]], account_id: str) -> list[dict[str, Any]]:
@@ -162,11 +202,13 @@ def sync(
     client: SnowflakeClient,
     databases: list[dict[str, Any]],
     common_job_parameters: dict,
+    skipped_schemas: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]], bool]:
     """Sync Snowflake schemas and return them for the object-level syncs to walk.
 
     Returns ``(schemas, complete)``, where ``complete`` is False when any database
-    could not be listed.
+    could not be listed. Every schema is loaded, but the returned list omits those
+    matching ``skipped_schemas`` so nothing beneath them is walked.
     """
     raw_schemas, complete = get(client, databases)
     schemas = transform(raw_schemas, client.account_id)
@@ -181,4 +223,4 @@ def sync(
             "Some Snowflake databases could not be listed; skipping schema cleanup "
             "so still-valid schemas are not deleted.",
         )
-    return schemas, complete
+    return walkable(schemas, skipped_schemas), complete

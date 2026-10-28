@@ -308,6 +308,8 @@ of complete account-wide visibility.
 | `--snowflake-role` | Role used for SQL statements. Set it to the user's default role. |
 | `--snowflake-warehouse` | Warehouse used to run SQL statements. |
 | `--snowflake-databases` | Comma-separated databases to sync. Defaults to every readable database. |
+| `--snowflake-skip-databases` | Comma-separated shell-style patterns of databases not to walk. |
+| `--snowflake-skip-schemas` | Comma-separated shell-style patterns matched against `DATABASE.SCHEMA`. |
 
 Supply exactly one of `--snowflake-pat-env-var` or
 `--snowflake-private-key-env-var`. Setting a passphrase without a private key is
@@ -349,7 +351,21 @@ scoped to it, so the runs do not interfere.
 On accounts with very many schemas, restrict the walk with
 `--snowflake-databases`. The `SNOWFLAKE` and `SNOWFLAKE_SAMPLE_DATA` databases
 and databases created from an inbound share are skipped automatically: they are
-provider-managed and enumerating them is slow and usually unauthorized.
+provider-managed and enumerating them is slow and usually unauthorized. So are
+the `DROPPED_USER$...` placeholder databases Snowflake creates when a user who
+owned objects is dropped; the REST API cannot address them.
+
+One unreadable database or schema marks the whole walk incomplete, which skips
+cleanup for every schema-scoped surface across the account. To exclude objects
+that are deliberately out of scope, use `--snowflake-skip-databases` and
+`--snowflake-skip-schemas`. Patterns are case-insensitive shell globs; schema
+patterns match `DATABASE.SCHEMA` using the names as Snowflake reports them, for
+example `SNOWFLAKE_LEARNING_DB.*@*`. Skipped databases and schemas are still
+inventoried, but nothing beneath them is walked, they do not block cleanup, and
+anything previously collected beneath them is removed.
+
+A schema listing that exceeds Snowflake's 10,000-row `SHOW` limit is read in
+chunks automatically.
 
 ## Verify access
 

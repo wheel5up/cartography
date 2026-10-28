@@ -225,6 +225,13 @@ def _parse_databases(raw: str | None) -> set[str] | None:
     return names or None
 
 
+def _parse_patterns(raw: str | None) -> frozenset[str]:
+    """Parse a comma-separated list of skip patterns, empty when unset."""
+    if not raw:
+        return frozenset()
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
 def _cleanup(
     neo4j_session: neo4j.Session,
     common_job_parameters: dict,
@@ -304,10 +311,15 @@ def start_snowflake_ingestion(neo4j_session: neo4j.Session, config: Config) -> N
         client,
         _parse_databases(config.snowflake_databases),
         common_job_parameters,
+        _parse_patterns(config.snowflake_skip_databases),
     )
     record("databases", complete)
     schema_list, complete = schemas.sync(
-        neo4j_session, client, walkable_databases, common_job_parameters
+        neo4j_session,
+        client,
+        walkable_databases,
+        common_job_parameters,
+        _parse_patterns(config.snowflake_skip_schemas),
     )
     record("schemas", complete)
 

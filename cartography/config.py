@@ -417,6 +417,14 @@ class Config:
     :type snowflake_databases: str
     :param snowflake_databases: Comma-separated list of Snowflake databases to sync. If unset, every
         readable database is synced. Optional.
+    :type snowflake_skip_databases: str
+    :param snowflake_skip_databases: Comma-separated shell-style patterns of Snowflake databases
+        whose schemas are not walked. Matched databases are still inventoried and do not block
+        cleanup. Optional.
+    :type snowflake_skip_schemas: str
+    :param snowflake_skip_schemas: Comma-separated shell-style patterns matched against
+        DATABASE.SCHEMA. Matched schemas are inventoried but not walked and do not block cleanup.
+        Optional.
     :type docker_scout_results_dir: str
     :param docker_scout_results_dir: Local directory containing Docker Scout recommendation text reports. Optional.
     :type docker_scout_source: str
@@ -789,6 +797,8 @@ class Config:
         snowflake_role=None,
         snowflake_warehouse=None,
         snowflake_databases=None,
+        snowflake_skip_databases=None,
+        snowflake_skip_schemas=None,
         gcp_excluded_org_ids=None,
         gcp_excluded_folder_ids=None,
         gcp_exclude_org_root_projects=False,
@@ -1124,6 +1134,8 @@ class Config:
         self.snowflake_role = snowflake_role
         self.snowflake_warehouse = snowflake_warehouse
         self.snowflake_databases = snowflake_databases
+        self.snowflake_skip_databases = snowflake_skip_databases
+        self.snowflake_skip_schemas = snowflake_skip_schemas
         self.orca_api_endpoint = orca_api_endpoint
         self.orca_api_token = orca_api_token
         self.zendesk_subdomain = zendesk_subdomain

@@ -8,6 +8,8 @@ from datetime import timezone
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from threading import Thread
+from urllib.parse import parse_qs
+from urllib.parse import urlsplit
 
 import jwt
 import pytest
@@ -15,6 +17,7 @@ import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+import cartography.intel.snowflake.util as snowflake_util
 from cartography.intel.snowflake.network_rules import get as get_network_rules
 from cartography.intel.snowflake.network_rules import get_schema_network_rules
 from cartography.intel.snowflake.stages import get as get_stages
@@ -32,6 +35,7 @@ from cartography.intel.snowflake.util import sf_fqn
 from cartography.intel.snowflake.util import sf_id
 from cartography.intel.snowflake.util import sf_path_segment
 from cartography.intel.snowflake.util import skip_or_raise_http
+from cartography.intel.snowflake.util import snowflake_error_code
 from cartography.intel.snowflake.util import SnowflakeClient
 from cartography.intel.snowflake.util import SnowflakeSqlError
 from cartography.intel.snowflake.util import untag_image_path
@@ -654,6 +658,102 @@ def test_schema_listing_still_fails_on_other_errors(status):
             list_schema_objects(client, "MY_DB", "airbyte_internal", "tags")
     finally:
         _shutdown(server)
+
+
+def _row_limit_handler(names: list[str], limit: int, requests_seen: list[dict]):
+    """Serve ``names`` like Snowflake: 400/090153 unbounded, LIMIT/FROM otherwise."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            query = parse_qs(urlsplit(self.path).query)
+            requests_seen.append(query)
+            if "showLimit" not in query:
+                _respond_json(
+                    self,
+                    {
+                        "code": "090153",
+                        "message": "the result set size exceeded the max number "
+                        "of rows(10000) supported for show statements.",
+                    },
+                    status=400,
+                )
+                return
+            show_limit = int(query["showLimit"][0])
+            assert show_limit <= limit
+            from_name = query.get("fromName", [None])[0]
+            ordered = sorted(names)
+            # FROM is inclusive: start at the first name >= the cursor.
+            start = (
+                0
+                if from_name is None
+                else next(
+                    (i for i, n in enumerate(ordered) if n >= from_name), len(ordered)
+                )
+            )
+            _respond_json(
+                self, [{"name": n} for n in ordered[start : start + show_limit]]
+            )
+
+        def log_message(self, format, *args):
+            pass
+
+    return Handler
+
+
+@pytest.mark.parametrize("count", [25, 20, 21])
+def test_list_schema_objects_chunks_past_show_row_limit(monkeypatch, count):
+    # Arrange: shrink the row cap so the test stays fast. count=20 lands exactly on
+    # a chunk boundary, which forces one extra (empty-of-new-rows) request.
+    monkeypatch.setattr(snowflake_util, "SHOW_ROW_LIMIT", 10)
+    names = [f"T{i:03d}" for i in range(count)]
+    seen: list[dict] = []
+    server = _serve(_row_limit_handler(names, 10, seen))
+    client = _build_client(server.server_port)
+    try:
+        # Act
+        rows = list_schema_objects(client, "GDC", "SIGMA", "tables")
+    finally:
+        _shutdown(server)
+
+    # Assert: every table exactly once, and the first request was the plain one.
+    assert rows is not None
+    assert sorted(row["name"] for row in rows) == names
+    assert len(rows) == count
+    assert "showLimit" not in seen[0]
+
+
+def test_list_schema_objects_chunking_refuses_a_stuck_cursor(monkeypatch):
+    # Arrange: a server that ignores fromName, so the cursor never advances.
+    monkeypatch.setattr(snowflake_util, "SHOW_ROW_LIMIT", 2)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if "showLimit" not in self.path:
+                _respond_json(self, {"code": "090153", "message": "x"}, status=400)
+                return
+            _respond_json(self, [{"name": "A"}, {"name": "B"}])
+
+        def log_message(self, format, *args):
+            pass
+
+    server = _serve(Handler)
+    client = _build_client(server.server_port)
+    try:
+        # Act / Assert: never a silent partial result.
+        with pytest.raises(RuntimeError, match="stopped advancing"):
+            list_schema_objects(client, "GDC", "SIGMA", "tables")
+    finally:
+        _shutdown(server)
+
+
+def test_snowflake_error_code_reads_the_body():
+    response = requests.Response()
+    response.status_code = 400
+    response._content = b'{"code": "090153", "message": "too many"}'
+    assert snowflake_error_code(requests.HTTPError(response=response)) == "090153"
+    response._content = b"not json"
+    assert snowflake_error_code(requests.HTTPError(response=response)) is None
+    assert snowflake_error_code(requests.HTTPError()) is None
 
 
 def test_hyphenated_account_id_accepts_either_input_form():
