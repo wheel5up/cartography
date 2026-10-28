@@ -138,3 +138,33 @@ def test_sync_snowflake_schemas(mock_get, neo4j_session):
         "id",
         "DEFAULT_EXTERNAL_VOLUME",
     ) == {(NUCLEAR_PLANT_SCHEMA_ID, MONORAIL_VOLUME_ID)}
+
+
+@patch.object(
+    cartography.intel.snowflake.schemas,
+    "get",
+    return_value=(SNOWFLAKE_SCHEMAS, True),
+)
+def test_skipped_schema_is_loaded_but_not_walked(mock_get, neo4j_session):
+    # Arrange
+    _ensure_local_neo4j_has_test_databases(neo4j_session)
+
+    # Act
+    walk, complete = cartography.intel.snowflake.schemas.sync(
+        neo4j_session,
+        build_test_client(),
+        [{"name": "SPRINGFIELD"}, {"name": "MONORAIL"}],
+        {"UPDATE_TAG": TEST_UPDATE_TAG, "ACCOUNT_ID": SNOWFLAKE_ACCOUNT_ID},
+        frozenset({"springfield.kwik_*"}),
+    )
+
+    # Assert: still inventoried, not walked, and the skip does not make the walk
+    # incomplete (so cleanup is not blocked).
+    assert complete is True
+    assert ("SPRINGFIELD", "KWIK_E_MART") not in {
+        (s["database_name"], s["name"]) for s in walk
+    }
+    assert len(walk) == len(SNOWFLAKE_SCHEMAS) - 1
+    assert (KWIK_E_MART_SCHEMA_ID,) in check_nodes(
+        neo4j_session, "SnowflakeSchema", ["id"]
+    )

@@ -286,3 +286,23 @@ def test_database_schema_listing_401_without_json_body_still_fails():
             get_database_schemas(client, "SOME_DB")
     finally:
         _shutdown(server)
+
+
+def test_walkable_omits_skipped_schemas_case_insensitively():
+    from cartography.intel.snowflake.schemas import walkable
+
+    schemas = [
+        {"database_name": "SNOWFLAKE_LEARNING_DB", "name": '"GMCFAUL@G2.COM_tutorial"'},
+        {"database_name": "SNOWFLAKE_LEARNING_DB", "name": "ADS_PERSONALISATION_DATA"},
+        {"database_name": "GDC", "name": "SIGMA"},
+        {"database_name": "GDC", "name": "LOOKER_SCRATCH"},
+    ]
+
+    kept = walkable(schemas, frozenset({"snowflake_learning_db.*@*", "gdc.sigma"}))
+
+    assert [(s["database_name"], s["name"]) for s in kept] == [
+        ("SNOWFLAKE_LEARNING_DB", "ADS_PERSONALISATION_DATA"),
+        ("GDC", "LOOKER_SCRATCH"),
+    ]
+    # No patterns is a no-op that returns the same list.
+    assert walkable(schemas, frozenset()) is schemas
