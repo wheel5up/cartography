@@ -60,6 +60,7 @@ def start_crowdstrike_ingestion(
         neo4j_session,
         config.update_tag,
         authorization,
+        extra_filter=getattr(config, "crowdstrike_spotlight_filter", None),
     )
     cleanup(neo4j_session, common_job_parameters)
 
