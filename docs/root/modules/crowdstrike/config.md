@@ -43,3 +43,17 @@ cartography \
 
 For a self-hosted CrowdStrike instance, set the API URL with
 `--crowdstrike-api-url`.
+
+### Narrowing Spotlight vulnerabilities
+
+By default every open or reopened Spotlight vulnerability is collected. On a
+fleet with stale browsers this can be millions of records. Pass an extra FQL
+clause with `--crowdstrike-spotlight-filter` to collect a subset; it is ANDed
+onto the open/reopen filter, which is always kept:
+
+```bash
+--crowdstrike-spotlight-filter "cve.severity:['CRITICAL','HIGH']+cve.exprt_rating:['HIGH','CRITICAL']"
+```
+
+Cleanup removes vulnerabilities the run did not see, so tightening the filter
+deletes previously collected findings outside it on the next run.

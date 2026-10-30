@@ -27,17 +27,34 @@ SPOTLIGHT_PAGE_SIZE = 5000
 SPOTLIGHT_FACETS = ["cve", "host_info", "remediation"]
 
 
+def build_spotlight_filter(extra_filter: str | None = None) -> str:
+    """
+    The open/reopen filter, narrowed by an optional extra FQL clause.
+
+    The status clause is always kept: cleanup deletes whatever this run did not
+    see, so an extra filter can only shrink the collected set, never widen it to
+    expired or closed vulnerabilities. Example extra filter:
+    ``cve.severity:['CRITICAL','HIGH']+cve.exprt_rating:['HIGH','CRITICAL']``.
+    """
+    extra = (extra_filter or "").strip().lstrip("+")
+    return f"{SPOTLIGHT_FILTER}+{extra}" if extra else SPOTLIGHT_FILTER
+
+
 @timeit
 def sync_vulnerabilities(
     neo4j_session: neo4j.Session,
     update_tag: int,
     authorization: OAuth2,
+    extra_filter: str | None = None,
 ) -> None:
     client = Spotlight_Vulnerabilities(
         auth_object=authorization,
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
-    for vulnerability_data in _prefetch(get_spotlight_vulnerabilities(client)):
+    spotlight_filter = build_spotlight_filter(extra_filter)
+    logger.info("Querying Spotlight vulnerabilities with filter %s", spotlight_filter)
+    pages = get_spotlight_vulnerabilities(client, spotlight_filter)
+    for vulnerability_data in _prefetch(pages):
         vulns, cves = transform(vulnerability_data)
         load_vulnerability_data(neo4j_session, vulns, update_tag)
         load_cve_data(neo4j_session, cves, update_tag)
@@ -160,6 +177,7 @@ def load_cve_data(
 
 def get_spotlight_vulnerabilities(
     client: Spotlight_Vulnerabilities,
+    spotlight_filter: str = SPOTLIGHT_FILTER,
 ) -> Iterator[list[dict]]:
     """
     Yield open and reopened vulnerabilities one page at a time.
@@ -171,7 +189,7 @@ def get_spotlight_vulnerabilities(
     are excluded because Spotlight no longer evaluates them.
     """
     parameters: dict[str, Any] = {
-        "filter": SPOTLIGHT_FILTER,
+        "filter": spotlight_filter,
         "limit": SPOTLIGHT_PAGE_SIZE,
         "facet": SPOTLIGHT_FACETS,
     }

@@ -644,6 +644,7 @@ class Config:
         crowdstrike_client_id=None,
         crowdstrike_client_secret=None,
         crowdstrike_api_url=None,
+        crowdstrike_spotlight_filter: str | None = None,
         gsuite_auth_method=None,
         gsuite_config=None,
         googleworkspace_auth_method=None,
@@ -945,6 +946,7 @@ class Config:
         self.crowdstrike_client_id = crowdstrike_client_id
         self.crowdstrike_client_secret = crowdstrike_client_secret
         self.crowdstrike_api_url = crowdstrike_api_url
+        self.crowdstrike_spotlight_filter: str | None = crowdstrike_spotlight_filter
         self.gsuite_auth_method = gsuite_auth_method
         self.gsuite_config = gsuite_config
         self.googleworkspace_auth_method = googleworkspace_auth_method

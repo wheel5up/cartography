@@ -1146,6 +1146,18 @@ class CLI:
                     hidden=PANEL_CROWDSTRIKE not in visible_panels,
                 ),
             ] = None,
+            crowdstrike_spotlight_filter: Annotated[
+                str | None,
+                typer.Option(
+                    "--crowdstrike-spotlight-filter",
+                    help=(
+                        "Extra FQL clause ANDed onto the open/reopen Spotlight filter, "
+                        "e.g. \"cve.severity:['CRITICAL','HIGH']\"."
+                    ),
+                    rich_help_panel=PANEL_CROWDSTRIKE,
+                    hidden=PANEL_CROWDSTRIKE not in visible_panels,
+                ),
+            ] = None,
             # =================================================================
             # Huntress Options
             # =================================================================
@@ -4020,6 +4032,7 @@ class CLI:
                 crowdstrike_client_id=crowdstrike_client_id,
                 crowdstrike_client_secret=crowdstrike_client_secret,
                 crowdstrike_api_url=crowdstrike_api_url,
+                crowdstrike_spotlight_filter=crowdstrike_spotlight_filter,
                 gsuite_auth_method=gsuite_auth_method,
                 gsuite_config=gsuite_config,
                 googleworkspace_auth_method=googleworkspace_auth_method,
