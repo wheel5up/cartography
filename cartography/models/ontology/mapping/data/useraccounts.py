@@ -524,6 +524,21 @@ opsgenie_mapping = OntologyMapping(
         ),
     ],
 )
+kandji_mapping = OntologyMapping(
+    module_name="kandji",
+    nodes=[
+        OntologyNodeMapping(
+            node_label="KandjiUser",
+            fields=[
+                OntologyFieldMapping(
+                    ontology_field="email", node_field="email", required=True
+                ),
+                OntologyFieldMapping(ontology_field="fullname", node_field="name"),
+                OntologyFieldMapping(ontology_field="active", node_field="active"),
+            ],
+        ),
+    ],
+)
 jumpcloud_mapping = OntologyMapping(
     module_name="jumpcloud",
     nodes=[
@@ -917,6 +932,7 @@ USERACCOUNTS_ONTOLOGY_MAPPING: dict[str, OntologyMapping] = {
     "subimage": subimage_mapping,
     "kubernetes": kubernetes_mapping,
     "jumpcloud": jumpcloud_mapping,
+    "kandji": kandji_mapping,
     "vercel": vercel_mapping,
     "railway": railway_mapping,
     "netlify": netlify_mapping,

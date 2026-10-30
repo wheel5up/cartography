@@ -9,6 +9,7 @@ DEVICES = {
             "os_version": "13.4",
             "platform": "Mac",
             "serial_number": "AAAAAAAA",
+            "user_id": "0a1b2c3d-1111-4a4a-8888-000000000001",
         },
         {
             "id": "f27bcd08-f653-4930-83b0-51970e923b98",
@@ -19,6 +20,7 @@ DEVICES = {
             "os_version": "14.4.1",
             "platform": "Mac",
             "serial_number": "BBBBBBBB",
+            "user_id": None,
         },
     ],
     "south_park_devices": [

@@ -1266,3 +1266,49 @@ def test_link_ontology_devices_from_miradore_user(neo4j_session):
         "OWNS",
         rel_direction_right=True,
     ) == {("mbsimpson@simpson.corp", "marge-macbook")}
+
+
+def test_link_ontology_devices_from_kandji_user(neo4j_session):
+    """A Kandji user assignment should derive canonical User-OWNS-Device relationships."""
+    neo4j_session.run("MATCH (n) DETACH DELETE n")
+    neo4j_session.run(
+        """
+        MERGE (u:User {id: 'hjsimpson@simpson.corp'})
+        SET u.email = 'hjsimpson@simpson.corp',
+            u.lastupdated = $update_tag
+
+        CREATE (ku:KandjiUser:UserAccount {
+            id: 'kandji-user-homer',
+            email: 'hjsimpson@simpson.corp',
+            lastupdated: $update_tag
+        })
+        CREATE (kd:KandjiDevice {
+            id: 'kandji-device-homer',
+            device_id: 'kandji-device-homer',
+            device_name: 'homer-macbook',
+            serial_number: 'C02HOMER0001',
+            platform: 'Mac',
+            lastupdated: $update_tag
+        })
+        CREATE (u)-[:HAS_ACCOUNT {lastupdated: $update_tag}]->(ku)
+        CREATE (ku)-[:OWNS {lastupdated: $update_tag}]->(kd)
+        """,
+        update_tag=TEST_UPDATE_TAG,
+    )
+
+    cartography.intel.ontology.devices.sync(
+        neo4j_session,
+        ["kandji"],
+        TEST_UPDATE_TAG,
+        {"UPDATE_TAG": TEST_UPDATE_TAG},
+    )
+
+    assert check_rels(
+        neo4j_session,
+        "User",
+        "id",
+        "Device",
+        "hostname",
+        "OWNS",
+        rel_direction_right=True,
+    ) == {("hjsimpson@simpson.corp", "homer-macbook")}

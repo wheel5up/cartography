@@ -1,8 +1,10 @@
 import logging
 
 import cartography.intel.kandji
+import cartography.intel.kandji.users
 import tests.data.kandji.devices
 import tests.data.kandji.tenant
+import tests.data.kandji.users
 from tests.integration.util import check_nodes
 from tests.integration.util import check_rels
 
@@ -171,4 +173,127 @@ def test_cleanup_kandji_devices(neo4j_session):
     cartography.intel.kandji.devices.cleanup(
         neo4j_session,
         common_job_parameters,
+    )
+
+
+def test_load_kandji_users_and_device_ownership(neo4j_session):
+    # Arrange
+    TEST_UPDATE_TAG = 1234
+    TEST_KANDJI_TENANT_ID = tests.data.kandji.tenant.TENANT["simpson_corp"]["id"]
+    common_job_parameters = {
+        "UPDATE_TAG": TEST_UPDATE_TAG,
+        "TENANT_ID": TEST_KANDJI_TENANT_ID,
+    }
+    users = cartography.intel.kandji.users.transform(
+        tests.data.kandji.users.USERS["simpson_corp_users"],
+    )
+
+    # Act: users first, then devices (same order as start_kandji_ingestion)
+    cartography.intel.kandji.users.load_users(
+        neo4j_session,
+        common_job_parameters,
+        users,
+    )
+    cartography.intel.kandji.devices.load_devices(
+        neo4j_session,
+        common_job_parameters,
+        tests.data.kandji.devices.DEVICES["simpson_corp_devices"],
+    )
+
+    # Assert: users exist and carry the UserAccount ontology label
+    assert check_nodes(
+        neo4j_session,
+        "KandjiUser",
+        ["id", "email", "integration_type"],
+    ) == {
+        (
+            "0a1b2c3d-1111-4a4a-8888-000000000001",
+            "hjsimpson@simpson.corp",
+            "scim",
+        ),
+        (
+            "0a1b2c3d-1111-4a4a-8888-000000000002",
+            "mbsimpson@simpson.corp",
+            "scim",
+        ),
+    }
+    assert check_nodes(neo4j_session, "UserAccount", ["id"]) >= {
+        ("0a1b2c3d-1111-4a4a-8888-000000000001",),
+        ("0a1b2c3d-1111-4a4a-8888-000000000002",),
+    }
+
+    # Assert: users belong to the tenant
+    assert check_rels(
+        neo4j_session,
+        "KandjiTenant",
+        "id",
+        "KandjiUser",
+        "id",
+        "RESOURCE",
+        rel_direction_right=True,
+    ) == {
+        ("SimpsonCorp", "0a1b2c3d-1111-4a4a-8888-000000000001"),
+        ("SimpsonCorp", "0a1b2c3d-1111-4a4a-8888-000000000002"),
+    }
+
+    # Assert: only the assigned device gets an OWNS edge
+    assert check_rels(
+        neo4j_session,
+        "KandjiUser",
+        "id",
+        "KandjiDevice",
+        "id",
+        "OWNS",
+        rel_direction_right=True,
+    ) == {
+        (
+            "0a1b2c3d-1111-4a4a-8888-000000000001",
+            "fc60decb-30cb-4db1-b3ec-2fa8ea1b83ed",
+        ),
+    }
+
+    # Cleanup test data
+    common_job_parameters = {
+        "UPDATE_TAG": TEST_UPDATE_TAG + 1234,
+        "TENANT_ID": TEST_KANDJI_TENANT_ID,
+    }
+    cartography.intel.kandji.devices.cleanup(neo4j_session, common_job_parameters)
+    cartography.intel.kandji.users.cleanup(neo4j_session, common_job_parameters)
+
+
+def test_cleanup_kandji_users(neo4j_session):
+    # Arrange: stale users in one tenant, fresh users in another
+    TEST_UPDATE_TAG = 1234
+    SIMPSON = tests.data.kandji.tenant.TENANT["simpson_corp"]["id"]
+    SOUTH_PARK = tests.data.kandji.tenant.TENANT["south_park"]["id"]
+    cartography.intel.kandji.users.load_users(
+        neo4j_session,
+        {"UPDATE_TAG": TEST_UPDATE_TAG, "TENANT_ID": SIMPSON},
+        cartography.intel.kandji.users.transform(
+            tests.data.kandji.users.USERS["simpson_corp_users"],
+        ),
+    )
+    cartography.intel.kandji.users.load_users(
+        neo4j_session,
+        {"UPDATE_TAG": TEST_UPDATE_TAG + 1, "TENANT_ID": SOUTH_PARK},
+        cartography.intel.kandji.users.transform(
+            tests.data.kandji.users.USERS["south_park_users"],
+        ),
+    )
+
+    # Act: cleanup Simpson tenant with the newer tag
+    cartography.intel.kandji.users.cleanup(
+        neo4j_session,
+        {"UPDATE_TAG": TEST_UPDATE_TAG + 1, "TENANT_ID": SIMPSON},
+    )
+
+    # Assert: only the other tenant's user remains
+    assert check_nodes(neo4j_session, "KandjiUser", ["id"]) == {
+        ("0a1b2c3d-2222-4a4a-8888-000000000001",),
+    }
+
+    # Cleanup test data
+    cartography.intel.kandji.users.cleanup(
+        neo4j_session,
+        {"UPDATE_TAG": TEST_UPDATE_TAG + 1234, "TENANT_ID": SOUTH_PARK},
     )
