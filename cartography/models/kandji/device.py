@@ -42,6 +42,50 @@ class KandjiDeviceNodeProperties(CartographyNodeProperties):
         extra_index=True,
         description="Device serial number.",
     )
+    udid: PropertyRef = PropertyRef(
+        "udid",
+        description="Apple unique device identifier.",
+    )
+    asset_tag: PropertyRef = PropertyRef(
+        "asset_tag",
+        description="Asset tag assigned in Kandji, if any.",
+    )
+    is_missing: PropertyRef = PropertyRef(
+        "is_missing",
+        description="True when the device has stopped checking in with Kandji.",
+    )
+    mdm_enabled: PropertyRef = PropertyRef(
+        "mdm_enabled",
+        description="Whether the device is enrolled in Kandji MDM.",
+    )
+    agent_installed: PropertyRef = PropertyRef(
+        "agent_installed",
+        description="Whether the Kandji agent is installed on the device.",
+    )
+    agent_version: PropertyRef = PropertyRef(
+        "agent_version",
+        description="Installed Kandji agent version.",
+    )
+    blueprint_id: PropertyRef = PropertyRef(
+        "blueprint_id",
+        description="ID of the Kandji blueprint (configuration profile set) assigned to the device.",
+    )
+    blueprint_name: PropertyRef = PropertyRef(
+        "blueprint_name",
+        description="Name of the Kandji blueprint assigned to the device.",
+    )
+    first_enrollment: PropertyRef = PropertyRef(
+        "first_enrollment",
+        description="Timestamp of the device's first Kandji enrollment.",
+    )
+    last_enrollment: PropertyRef = PropertyRef(
+        "last_enrollment",
+        description="Timestamp of the device's most recent Kandji enrollment.",
+    )
+    tags: PropertyRef = PropertyRef(
+        "tags",
+        description="Kandji tags applied to the device.",
+    )
 
 
 @dataclass(frozen=True)

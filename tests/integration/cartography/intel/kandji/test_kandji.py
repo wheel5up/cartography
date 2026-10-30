@@ -236,6 +236,28 @@ def test_load_kandji_users_and_device_ownership(neo4j_session):
         ("SimpsonCorp", "0a1b2c3d-1111-4a4a-8888-000000000002"),
     }
 
+    # Assert: device health / enrollment fields are stored
+    # Scoped to this tenant: earlier tests leave the other tenant's devices.
+    devices = {
+        tuple(r.values())
+        for r in neo4j_session.run(
+            """
+            MATCH (:KandjiTenant {id: $tenant})-[:RESOURCE]->(d:KandjiDevice)
+            RETURN d.id, d.is_missing, d.mdm_enabled, d.agent_installed, d.blueprint_name
+            """,
+            tenant=TEST_KANDJI_TENANT_ID,
+        )
+    }
+    assert devices == {
+        ("fc60decb-30cb-4db1-b3ec-2fa8ea1b83ed", False, True, True, "Standard Mac"),
+        ("f27bcd08-f653-4930-83b0-51970e923b98", True, True, False, "Standard Mac"),
+    }
+    tags = neo4j_session.run(
+        "MATCH (d:KandjiDevice {id: $id}) RETURN d.tags AS tags",
+        id="fc60decb-30cb-4db1-b3ec-2fa8ea1b83ed",
+    ).single()["tags"]
+    assert tags == ["engineering"]
+
     # Assert: only the assigned device gets an OWNS edge
     assert check_rels(
         neo4j_session,
