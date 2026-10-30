@@ -86,3 +86,18 @@ def test_transform_devices_flattens_user_id() -> None:
 
     assert [d["user_id"] for d in result] == ["u1", None, None, None]
     assert [d["id"] for d in result] == ["d1", "d2", "d3", "d4"]
+
+
+@patch("cartography.intel.kandji.devices.cleanup")
+@patch("cartography.intel.kandji.devices.load_devices")
+@patch("cartography.intel.kandji.devices.get")
+def test_devices_sync_returns_device_ids(
+    mock_get: Mock, mock_load: Mock, mock_cleanup: Mock
+) -> None:
+    from cartography.intel.kandji.devices import sync
+
+    mock_get.return_value = [{"device_id": "d1"}, {"device_id": "d2"}]
+
+    ids = sync(Mock(), "https://t", "tok", {"UPDATE_TAG": 1, "TENANT_ID": "T"})
+
+    assert ids == ["d1", "d2"]

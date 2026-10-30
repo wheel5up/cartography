@@ -111,8 +111,10 @@ def sync(
     kandji_base_uri: str,
     kandji_token: str,
     common_job_parameters: Dict[str, Any],
-) -> None:
+) -> List[str]:
+    """Sync devices and return the synced device IDs (used by the apps sync)."""
     devices = get(kandji_base_uri=kandji_base_uri, kandji_token=kandji_token)
     formatted_devices = transform(devices)
     load_devices(neo4j_session, common_job_parameters, formatted_devices)
     cleanup(neo4j_session, common_job_parameters)
+    return [d["id"] for d in formatted_devices]
