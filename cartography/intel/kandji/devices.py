@@ -62,6 +62,10 @@ def transform(api_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for device in api_result:
         n_device = device
         n_device["id"] = device["device_id"]
+        # Kandji returns the assigned user as a nested object (or an empty
+        # value when unassigned); flatten its id so the OWNS rel can match it.
+        user = device.get("user")
+        n_device["user_id"] = user.get("id") if isinstance(user, dict) else None
         result.append(n_device)
     return result
 

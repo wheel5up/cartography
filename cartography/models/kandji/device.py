@@ -82,6 +82,27 @@ class KandjiDeviceToTenantDeprecatedRel(CartographyRelSchema):
 
 
 @dataclass(frozen=True)
+class KandjiUserToKandjiDeviceRelProperties(CartographyRelProperties):
+    lastupdated: PropertyRef = PropertyRef("lastupdated", set_in_kwargs=True)
+
+
+@dataclass(frozen=True)
+# (:KandjiUser)-[:OWNS]->(:KandjiDevice)
+class KandjiUserToKandjiDeviceRel(CartographyRelSchema):
+    """The Kandji user the device is assigned to."""
+
+    target_node_label: str = "KandjiUser"
+    target_node_matcher: TargetNodeMatcher = make_target_node_matcher(
+        {"id": PropertyRef("user_id")},
+    )
+    direction: LinkDirection = LinkDirection.INWARD
+    rel_label: str = "OWNS"
+    properties: KandjiUserToKandjiDeviceRelProperties = (
+        KandjiUserToKandjiDeviceRelProperties()
+    )
+
+
+@dataclass(frozen=True)
 class KandjiDeviceSchema(CartographyNodeSchema):
     """A device managed by Kandji."""
 
@@ -94,5 +115,8 @@ class KandjiDeviceSchema(CartographyNodeSchema):
     )
     # DEPRECATED: for backward compatibility, will be removed in v1.0.0
     other_relationships: OtherRelationships = OtherRelationships(
-        rels=[KandjiDeviceToTenantDeprecatedRel()],
+        rels=[
+            KandjiDeviceToTenantDeprecatedRel(),
+            KandjiUserToKandjiDeviceRel(),
+        ],
     )
