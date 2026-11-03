@@ -9,11 +9,20 @@ Snowflake role a SCIM provisioner acts as.
 Two values that ``DESC`` returns are deliberately not stored: the SAML signing
 certificate body (only its SHA-256 fingerprint is kept, which is enough to detect a
 rotation or a mismatch) and ``OAUTH_CLIENT_SECRET``.
+
+``DESC`` on a SAML2, SCIM, OAuth, External OAuth or OIDC integration requires
+OWNERSHIP; ``USAGE`` is not enough and there is no read-only privilege. A read-only
+collector therefore cannot describe them directly. When an administrator has
+deployed the owner's-rights procedure named by ``DESCRIBE_PROCEDURE`` (G2:
+cartography-deploy/snowflake-lambda-loader/sql/), it is called once and its output
+used in place of the per-integration ``DESC``. Until it exists the call fails, is
+logged at INFO, and the sync behaves exactly as before.
 """
 
 import base64
 import binascii
 import hashlib
+import json
 import logging
 from typing import Any
 
@@ -38,6 +47,14 @@ from cartography.models.snowflake.security_integration import (
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
+
+# Owner's-rights procedure that returns SHOW + DESC output for every security
+# integration. Optional: absent today, so calling it must never fail the sync.
+DESCRIBE_PROCEDURE = "CARTOGRAPHY_SUPPORT.PROCS.DESCRIBE_SECURITY_INTEGRATIONS"
+_DESCRIBE_PROCEDURE_VERSION = 1
+# Besides the generic "does not exist or not authorized" (database or schema
+# missing), a missing procedure in an existing schema reports as an unknown function.
+_PROCEDURE_MISSING_MARKERS = ("unknown function", "unknown user-defined function")
 
 # Snowflake's integration `type` is the protocol optionally suffixed with the
 # provider, for example SAML2, EXTERNAL_OAUTH - OKTA or SCIM - AZURE. Matching on the
@@ -118,6 +135,88 @@ def get_details(client: SnowflakeClient, name: str) -> dict[str, str | None] | N
             f"security integration {name}", "DESC INTEGRATION is not permitted"
         )
         return None
+
+
+def parse_procedure_output(raw: Any) -> dict[str, dict[str, str | None]]:
+    """Fold the procedure's VARIANT into ``{name: {property_lower: value}}``.
+
+    Shaped like ``SnowflakeClient.describe`` output so ``transform`` is unchanged.
+    Integrations the procedure could not describe (``properties`` null) are left
+    out, so the caller falls back to ``DESC`` for them. The SQL API returns a
+    VARIANT as JSON text. Raises ValueError for any other shape or version.
+    """
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        if payload.get("version") != _DESCRIBE_PROCEDURE_VERSION:
+            raise ValueError(f"unsupported version {payload.get('version')!r}")
+        details: dict[str, dict[str, str | None]] = {}
+        for integration in payload["integrations"]:
+            properties = integration.get("properties")
+            if properties is None:
+                continue
+            details[integration["name"]] = {
+                str(key).lower(): (prop or {}).get("value")
+                for key, prop in properties.items()
+            }
+        return details
+    except (AttributeError, KeyError, TypeError) as error:
+        raise ValueError(f"unexpected payload: {error!r}") from error
+
+
+@timeit
+def get_details_from_procedure(
+    client: SnowflakeClient,
+    procedure: str | None = DESCRIBE_PROCEDURE,
+) -> dict[str, dict[str, str | None]] | None:
+    """Call the owner's-rights describe procedure, or None when it is unusable.
+
+    Never raises: every failure falls back to describing integrations directly.
+    "Does not exist or not authorized" is the expected state until an
+    administrator deploys the procedure, so it logs at INFO. Anything else (the
+    procedure exists but errors, or returns an unexpected shape) logs a WARNING,
+    because then it is deployed and broken.
+    """
+    if not procedure:
+        return None
+    try:
+        rows = client.run_sql(f"CALL {procedure}()")
+    except SnowflakeSqlError as error:
+        message = str(error).lower()
+        if is_sql_unavailable(error) or any(
+            marker in message for marker in _PROCEDURE_MISSING_MARKERS
+        ):
+            logger.info(
+                "Snowflake procedure %s is not deployed or not granted; describing "
+                "security integrations directly.",
+                procedure,
+            )
+        else:
+            logger.warning(
+                "Snowflake procedure %s failed (%s); describing security "
+                "integrations directly.",
+                procedure,
+                error,
+            )
+        return None
+    try:
+        if not rows:
+            raise ValueError("no rows")
+        # One row, one VARIANT column named after the procedure.
+        details = parse_procedure_output(next(iter(rows[0].values()), None))
+    except ValueError as error:
+        logger.warning(
+            "Snowflake procedure %s returned an unusable result (%s); describing "
+            "security integrations directly.",
+            procedure,
+            error,
+        )
+        return None
+    logger.info(
+        "Snowflake procedure %s described %d security integrations.",
+        procedure,
+        len(details),
+    )
+    return details
 
 
 def transform(
@@ -212,6 +311,7 @@ def sync(
     neo4j_session: neo4j.Session,
     client: SnowflakeClient,
     common_job_parameters: dict,
+    describe_procedure: str | None = DESCRIBE_PROCEDURE,
 ) -> bool:
     """Sync Snowflake security integrations.
 
@@ -219,17 +319,24 @@ def sync(
     the first pass, and before secrets and external access integrations, which point
     back at these nodes.
 
+    Details come from ``describe_procedure`` when it is deployed, and from a direct
+    ``DESC`` for anything it did not cover. Pass None to skip the procedure.
+
     Returns whether every integration could be listed and described.
     """
     integrations = get(client)
     if integrations is None:
         return False
 
+    from_procedure = get_details_from_procedure(client, describe_procedure) or {}
+
     details_by_name: dict[str, dict[str, str | None]] = {}
     complete = True
     for integration in integrations:
         name = integration["name"]
-        details = get_details(client, name)
+        details = from_procedure.get(name)
+        if details is None:
+            details = get_details(client, name)
         if details is None:
             complete = False
             continue
