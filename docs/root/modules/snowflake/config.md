@@ -286,6 +286,18 @@ when their own reads are complete.
 | `MODIFY PROGRAMMATIC AUTHENTICATION METHODS` on a user | Listing that user's programmatic access tokens. Without it Cartography inventories only the tokens of the user it authenticates as, and reports the surface incomplete so no token is deleted at cleanup. A `USER` object has no plain `MODIFY` privilege, and no account-level privilege substitutes for this one. | Far from read-only: the same privilege grants creating, rotating and deleting that user's tokens and key pairs. There is no view-only equivalent, so the honest choice is usually to leave it ungranted and accept partial token coverage. |
 | `ORGADMIN` | Listing the other accounts in the organization, so they appear as `SnowflakeAccount` nodes. | A highly privileged organization-level role. Usually not worth it; Cartography syncs the connected account either way. |
 
+### Security integration details without OWNERSHIP
+
+`DESC` on a SAML2, SCIM, OAuth, External OAuth or OIDC security integration
+requires `OWNERSHIP`; `USAGE` is not enough and there is no read-only
+alternative. Without it, those integrations are not loaded. An administrator can
+instead deploy an owner's-rights procedure,
+`CARTOGRAPHY_SUPPORT.PROCS.DESCRIBE_SECURITY_INTEGRATIONS()`, that runs only
+`SHOW SECURITY INTEGRATIONS` and `DESC SECURITY INTEGRATION` and returns the
+result, and grant the collector role `USAGE` on it. Cartography calls it once
+per sync when present and falls back to direct `DESC` otherwise; a missing
+procedure is logged at INFO and changes nothing.
+
 Cartography prefers the `ACCOUNT_USAGE` views for roles and grants and logs which
 path it used. It falls back to the per-role object API only when those views are
 unreadable; that path costs two requests per role and, as above, cannot establish
