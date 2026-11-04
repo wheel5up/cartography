@@ -292,7 +292,7 @@ when their own reads are complete.
 requires `OWNERSHIP`; `USAGE` is not enough and there is no read-only
 alternative. Without it, those integrations are not loaded. An administrator can
 instead deploy an owner's-rights procedure,
-`CARTOGRAPHY_SUPPORT.PROCS.DESCRIBE_SECURITY_INTEGRATIONS()`, that runs only
+`DATA_PLATFORM.CARTOGRAPHY.DESCRIBE_SECURITY_INTEGRATIONS()`, that runs only
 `SHOW SECURITY INTEGRATIONS` and `DESC SECURITY INTEGRATION` and returns the
 result, and grant the collector role `USAGE` on it. Cartography calls it once
 per sync when present and falls back to direct `DESC` otherwise; a missing

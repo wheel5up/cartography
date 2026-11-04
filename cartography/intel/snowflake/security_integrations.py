@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 # Owner's-rights procedure that returns SHOW + DESC output for every security
 # integration. Optional: absent today, so calling it must never fail the sync.
-DESCRIBE_PROCEDURE = "CARTOGRAPHY_SUPPORT.PROCS.DESCRIBE_SECURITY_INTEGRATIONS"
+DESCRIBE_PROCEDURE = "DATA_PLATFORM.CARTOGRAPHY.DESCRIBE_SECURITY_INTEGRATIONS"
 _DESCRIBE_PROCEDURE_VERSION = 1
 # Besides the generic "does not exist or not authorized" (database or schema
 # missing), a missing procedure in an existing schema reports as an unknown function.
