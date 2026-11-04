@@ -116,8 +116,8 @@ def test_parse_procedure_output_rejects_bad_payloads(raw):
 @pytest.mark.parametrize(
     "message",
     [
-        "Snowflake error 002003: SQL compilation error: Database 'CARTOGRAPHY_SUPPORT' does not exist or not authorized.",
-        "Snowflake error 002141: SQL compilation error: Unknown user-defined function CARTOGRAPHY_SUPPORT.PROCS.DESCRIBE_SECURITY_INTEGRATIONS",
+        "Snowflake error 002003: SQL compilation error: Database 'DATA_PLATFORM' does not exist or not authorized.",
+        "Snowflake error 002141: SQL compilation error: Unknown user-defined function DATA_PLATFORM.CARTOGRAPHY.DESCRIBE_SECURITY_INTEGRATIONS",
         "Snowflake error 003001: SQL access control error: Insufficient privileges to operate on procedure",
     ],
 )
@@ -159,7 +159,7 @@ def test_sync_without_procedure_matches_old_behaviour(mock_get_details, mock_loa
     mock_get_details.return_value = None
     client = _client(
         call_error=SnowflakeSqlError(
-            "Database 'CARTOGRAPHY_SUPPORT' does not exist or not authorized."
+            "Database 'DATA_PLATFORM' does not exist or not authorized."
         )
     )
 
