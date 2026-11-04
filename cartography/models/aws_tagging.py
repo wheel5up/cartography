@@ -120,4 +120,5 @@ AWS_TAGGABLE_RESOURCES = (
         "id",
     ),
     AWSTaggableResource("sqs", "AWSSQSQueue", "id"),
+    AWSTaggableResource("ssm:parameter", "AWSSSMParameter", "id"),
 )

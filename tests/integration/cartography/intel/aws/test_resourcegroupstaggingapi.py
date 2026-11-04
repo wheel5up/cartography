@@ -6,6 +6,7 @@ import cartography.intel.aws.ec2.instances
 import cartography.intel.aws.rds
 import cartography.intel.aws.redshift
 import cartography.intel.aws.resourcegroupstaggingapi as rgta
+import cartography.intel.aws.ssm
 from cartography.client.core.tx import load
 from cartography.intel.aws.ec2.instances import sync_ec2_instances
 from cartography.intel.aws.ec2.load_balancers import load_load_balancers
@@ -18,6 +19,7 @@ from tests.data.aws.resourcegroupstaggingapi import GET_RESOURCES_RESPONSE_LB_US
 from tests.data.aws.resourcegroupstaggingapi import GET_RESOURCES_RESPONSE_LB_US_WEST_2
 from tests.data.aws.resourcegroupstaggingapi import LOAD_BALANCERS_US_EAST_1
 from tests.data.aws.resourcegroupstaggingapi import LOAD_BALANCERS_US_WEST_2
+from tests.data.aws.ssm import SSM_PARAMETERS_DATA
 from tests.integration.cartography.intel.aws.common import create_test_account
 from tests.integration.util import check_nodes
 from tests.integration.util import check_rels
@@ -25,6 +27,62 @@ from tests.integration.util import check_rels
 TEST_ACCOUNT_ID = "1234"
 TEST_REGION = "us-east-1"
 TEST_UPDATE_TAG = 123456789
+
+
+def test_sync_tags_ssm_parameters(neo4j_session):
+    """(AWSSSMParameter)-[:TAGGED]->(AWSTag) is created from Tagging API data."""
+    # Arrange
+    account_id = "000000000000"
+    region = "eu-west-1"
+    create_test_account(neo4j_session, account_id, TEST_UPDATE_TAG)
+    cartography.intel.aws.ssm.load_ssm_parameters(
+        neo4j_session,
+        cartography.intel.aws.ssm.transform_ssm_parameters(
+            copy.deepcopy(SSM_PARAMETERS_DATA)
+        ),
+        region,
+        account_id,
+        TEST_UPDATE_TAG,
+    )
+    tagged_arn = SSM_PARAMETERS_DATA[1]["ARN"]
+    tag_response = [
+        {
+            "ResourceARN": tagged_arn,
+            "Tags": [{"Key": "g2:jit-protected", "Value": "true"}],
+        },
+    ]
+    test_mapping = {
+        "ssm:parameter": rgta.TAG_RESOURCE_TYPE_MAPPINGS["ssm:parameter"],
+    }
+
+    # Act
+    with patch.object(rgta, "get_tags", return_value=tag_response):
+        sync(
+            neo4j_session,
+            MagicMock(),
+            [region],
+            account_id,
+            TEST_UPDATE_TAG,
+            {"UPDATE_TAG": TEST_UPDATE_TAG, "AWS_ID": account_id},
+            tag_resource_type_mappings=test_mapping,
+        )
+
+    # Assert
+    assert check_rels(
+        neo4j_session,
+        "AWSSSMParameter",
+        "id",
+        "AWSTag",
+        "id",
+        "TAGGED",
+        rel_direction_right=True,
+    ) == {
+        (tagged_arn, "g2:jit-protected:true"),
+    }
+
+    # Cleanup: the module shares one database, and test_sync_tags asserts the
+    # exact set of AWSTag nodes.
+    neo4j_session.run("MATCH (n) WHERE n:AWSTag OR n:AWSSSMParameter DETACH DELETE n")
 
 
 @patch.object(

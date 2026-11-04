@@ -56,6 +56,23 @@ def test_get_resource_type_from_arn():
     )
 
 
+def test_ssm_parameter_tags_map_to_parameter_nodes():
+    """SSM parameters are taggable via the Tagging API and keyed by their full ARN."""
+    arn = "arn:aws:ssm:us-east-1:1234:parameter/app/prod/DATABASE_URL"
+    assert rgta.get_resource_type_from_arn(arn) == "ssm:parameter"
+    mapping = rgta.TAG_RESOURCE_TYPE_MAPPINGS["ssm:parameter"]
+    assert mapping["label"] == "AWSSSMParameter"
+    assert mapping["property"] == "id"
+    assert "id_func" not in mapping  # node id is the ARN as-is
+    grouped = rgta._group_tag_data_by_resource_type(
+        [{"ResourceARN": arn, "Tags": [{"Key": "g2:jit-protected", "Value": "true"}]}],
+        rgta.TAG_RESOURCE_TYPE_MAPPINGS,
+    )
+    assert len(grouped["ssm:parameter"]) == 1
+    rgta.transform_tags(grouped["ssm:parameter"], "ssm:parameter")
+    assert grouped["ssm:parameter"][0]["resource_id"] == arn
+
+
 def test_group_tag_data_by_resource_type():
     grouped = rgta._group_tag_data_by_resource_type(
         copy.deepcopy(test_data.GET_RESOURCES_RESPONSE),
