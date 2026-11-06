@@ -1,4 +1,7 @@
 import logging
+import threading
+from concurrent.futures import as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import neo4j
@@ -7,6 +10,7 @@ from googleapiclient.errors import HttpError
 
 from cartography.client.core.tx import load
 from cartography.graph.job import GraphJob
+from cartography.intel.gcp.clients import _authorized_http_with_timeout
 from cartography.intel.gcp.util import classify_gcp_http_error
 from cartography.intel.gcp.util import gcp_api_execute_with_retry
 from cartography.intel.gcp.util import summarize_gcp_http_error
@@ -15,6 +19,9 @@ from cartography.models.gcp.kms.keyring import GCPKeyRingSchema
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
+
+# Concurrent keyRings.list calls per project (one per KMS location).
+KMS_LOCATION_WORKERS = 16
 
 
 @timeit
@@ -69,29 +76,57 @@ def get_key_rings(
     :return: A list of dictionaries representing KMS Key Rings, or None if sync
              should be skipped to preserve existing data.
     """
-    rings = []
-    try:
-        for loc in locations:
-            location_id = loc.get("locationId")
-            if not location_id:
-                continue
+    location_ids = [loc["locationId"] for loc in locations if loc.get("locationId")]
+    # KMS has no wildcard location for keyRings.list (locations/- is rejected),
+    # so every location (~70) is a separate call at ~0.6s each, ~45s per
+    # KMS-enabled project when run serially. Run them concurrently.
+    #
+    # googleapiclient's httplib2 transport is not thread-safe, so each worker
+    # thread gets its own AuthorizedHttp (same credentials and timeout as the
+    # client's); the Resource object itself is only used to build requests.
+    credentials = getattr(getattr(client, "_http", None), "credentials", None)
+    thread_local = threading.local()
 
-            parent = f"projects/{project_id}/locations/{location_id}"
-            request = client.projects().locations().keyRings().list(parent=parent)
+    def _http() -> Any:
+        if credentials is None:
+            return None  # tests / non-standard clients: use the request's own http
+        if not hasattr(thread_local, "http"):
+            thread_local.http = _authorized_http_with_timeout(credentials)
+        return thread_local.http
 
-            while request is not None:
-                response = gcp_api_execute_with_retry(request)
-                rings.extend(response.get("keyRings", []))
-                request = (
-                    client.projects()
-                    .locations()
-                    .keyRings()
-                    .list_next(
-                        previous_request=request,
-                        previous_response=response,
-                    )
+    def _list_location(location_id: str) -> list[dict]:
+        parent = f"projects/{project_id}/locations/{location_id}"
+        location_rings: list[dict] = []
+        request = client.projects().locations().keyRings().list(parent=parent)
+        while request is not None:
+            http = _http()
+            if http is not None:
+                request.http = http
+            response = gcp_api_execute_with_retry(request)
+            location_rings.extend(response.get("keyRings", []))
+            request = (
+                client.projects()
+                .locations()
+                .keyRings()
+                .list_next(
+                    previous_request=request,
+                    previous_response=response,
                 )
-        return rings
+            )
+        return location_rings
+
+    rings_by_location: dict[str, list[dict]] = {}
+    try:
+        workers = min(KMS_LOCATION_WORKERS, len(location_ids)) or 1
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_list_location, location_id): location_id
+                for location_id in location_ids
+            }
+            for future in as_completed(futures):
+                rings_by_location[futures[future]] = future.result()
+        # Preserve the original per-location order in the result.
+        return [ring for lid in location_ids for ring in rings_by_location[lid]]
     except HttpError as e:
         category = classify_gcp_http_error(e)
         if category == "billing_disabled":
