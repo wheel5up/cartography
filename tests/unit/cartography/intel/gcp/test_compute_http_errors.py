@@ -82,28 +82,82 @@ class TestGetZonesInProjectHttpErrors:
                 get_zones_in_project("test-project", mock_compute)
 
 
-class TestGetGcpInstanceResponsesHttpErrors:
-    def test_skips_zone_for_transient_errors(self):
-        mock_compute = MagicMock()
-        zones = [{"name": "zone-a"}, {"name": "zone-b"}]
+class TestGetGcpInstanceResponses:
+    def _paged(self, mock_compute, pages):
+        """Wire instances().aggregatedList(...) / aggregatedList_next(...) to return `pages`."""
+        requests = [_make_request(response=p) for p in pages]
+        api = mock_compute.instances.return_value
+        api.aggregatedList.return_value = requests[0]
+        api.aggregatedList_next.side_effect = requests[1:] + [None]
+        return api
 
-        first_request = _make_request(
+    def test_uses_one_aggregated_call_and_regroups_by_zone(self):
+        mock_compute = MagicMock()
+        api = self._paged(
+            mock_compute,
+            [
+                {
+                    "items": {
+                        "zones/zone-a": {"instances": [{"name": "vm-1"}]},
+                        "zones/zone-b": {
+                            "warning": {"code": "NO_RESULTS_ON_PAGE"},
+                        },
+                    }
+                },
+                {
+                    "items": {
+                        "zones/zone-a": {"instances": [{"name": "vm-2"}]},
+                        "zones/zone-c": {"instances": [{"name": "vm-3"}]},
+                    }
+                },
+            ],
+        )
+        zones = [{"name": "zone-a"}, {"name": "zone-b"}, {"name": "zone-c"}]
+
+        result = get_gcp_instance_responses("test-project", zones, mock_compute)
+
+        api.list.assert_not_called()
+        api.aggregatedList.assert_called_once_with(
+            project="test-project", returnPartialSuccess=True
+        )
+        assert result == [
+            {
+                "id": "projects/test-project/zones/zone-a/instances",
+                "items": [{"name": "vm-1"}, {"name": "vm-2"}],
+            },
+            {
+                "id": "projects/test-project/zones/zone-c/instances",
+                "items": [{"name": "vm-3"}],
+            },
+        ]
+
+    def test_no_zones_means_no_call(self):
+        mock_compute = MagicMock()
+        assert get_gcp_instance_responses("test-project", None, mock_compute) == []
+        mock_compute.instances.return_value.aggregatedList.assert_not_called()
+
+    def test_keeps_fetched_pages_on_transient_error(self):
+        mock_compute = MagicMock()
+        api = mock_compute.instances.return_value
+        api.aggregatedList.return_value = _make_request(
+            response={"items": {"zones/zone-a": {"instances": [{"name": "vm-1"}]}}}
+        )
+        api.aggregatedList_next.return_value = _make_request(
             error=_make_http_error(
                 503,
                 reason="backendError",
                 message="The service is currently unavailable",
             ),
         )
-        success_response = {"id": "projects/test-project/zones/zone-b/instances"}
-        second_request = _make_request(response=success_response)
-        mock_compute.instances.return_value.list.side_effect = [
-            first_request,
-            second_request,
-        ]
 
         with patch("time.sleep", return_value=None):
-            assert get_gcp_instance_responses("test-project", zones, mock_compute) == [
-                success_response
+            assert get_gcp_instance_responses(
+                "test-project", [{"name": "zone-a"}], mock_compute
+            ) == [
+                {
+                    "id": "projects/test-project/zones/zone-a/instances",
+                    "items": [{"name": "vm-1"}],
+                }
             ]
 
     @pytest.mark.parametrize(
@@ -116,12 +170,14 @@ class TestGetGcpInstanceResponsesHttpErrors:
     )
     def test_reraises_non_transient_errors(self, error):
         mock_compute = MagicMock()
-        zones = [{"name": "zone-a"}]
-        request = _make_request(error=error)
-        mock_compute.instances.return_value.list.return_value = request
+        mock_compute.instances.return_value.aggregatedList.return_value = _make_request(
+            error=error
+        )
 
         with pytest.raises(HttpError):
-            get_gcp_instance_responses("test-project", zones, mock_compute)
+            get_gcp_instance_responses(
+                "test-project", [{"name": "zone-a"}], mock_compute
+            )
 
 
 class TestGetGcpSubnetsHttpErrors:
