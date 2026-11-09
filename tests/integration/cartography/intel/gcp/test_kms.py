@@ -268,7 +268,10 @@ def test_sync_kms_preserves_existing_data_when_billing_disabled(
         ),
     }
     assert check_nodes(neo4j_session, "GCPCryptoKey", ["id"]) == expected_cryptokeys
-    request.execute.assert_called_once_with(num_retries=5)
+    # Locations are listed concurrently, so every location may be attempted
+    # before the billing error stops the sync (previously serial: exactly one).
+    assert 1 <= request.execute.call_count <= len(MOCK_LOCATIONS)
+    request.execute.assert_called_with(num_retries=5)
     assert (
         "Billing is disabled for project test-project while listing KMS key rings. "
         "Skipping KMS sync to preserve existing data."

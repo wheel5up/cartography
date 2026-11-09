@@ -55,6 +55,7 @@ from cartography.intel.gcp.cloudrun import job as cloudrun_job
 from cartography.intel.gcp.cloudrun import revision as cloudrun_revision
 from cartography.intel.gcp.cloudrun import service as cloudrun_service
 from cartography.intel.gcp.cloudrun.util import discover_cloud_run_locations
+from cartography.intel.gcp.crm.folders import get_gcp_folders
 from cartography.intel.gcp.crm.folders import sync_gcp_folders
 from cartography.intel.gcp.crm.orgs import sync_gcp_organizations
 from cartography.intel.gcp.crm.projects import sync_gcp_projects
@@ -806,12 +807,44 @@ def _sync_project_resources(
     )
 
 
+def select_project_batch(
+    projects: List[Dict],
+    batch_index: Optional[int],
+    batch_count: Optional[int],
+) -> List[Dict]:
+    """
+    Return the projects in batch `batch_index` of `batch_count`.
+
+    Projects are sorted by projectId and dealt round-robin, so batch membership
+    is deterministic for a given project list and batches stay balanced as
+    projects are added. With no batching configured, all projects are returned.
+    """
+    if batch_count is None or batch_index is None:
+        return projects
+    ordered = sorted(projects, key=lambda p: p.get("projectId") or "")
+    return [p for i, p in enumerate(ordered) if i % batch_count == batch_index]
+
+
+class GCPBatchResult(NamedTuple):
+    """
+    What a project-batch run of start_gcp_ingestion() reports, so the caller can
+    decide whether finalize_gcp_ingestion() may run each org's shared cleanup.
+    """
+
+    # Full org resource names synced by this batch (e.g. "organizations/123").
+    org_ids: List[str]
+    # False if any project in this batch did not fully refresh its policy
+    # bindings (permission denied, retries exhausted, ...). Inherited binding
+    # cleanup for these orgs must then be skipped.
+    policy_bindings_complete: bool
+
+
 @timeit
 def start_gcp_ingestion(
     neo4j_session: neo4j.Session,
     config: Config,
     credentials: Optional[GoogleCredentials] = None,
-) -> None:
+) -> Optional[GCPBatchResult]:
     """
     Starts the GCP ingestion process by initializing Google Application Default Credentials, creating the necessary
     resource objects, listing all GCP organizations and projects available to the GCP identity, and supplying that
@@ -819,7 +852,9 @@ def start_gcp_ingestion(
     :param neo4j_session: The Neo4j session
     :param config: A `cartography.config` object
     :param credentials: Optional GCP credentials. If not provided, ADC will be used.
-    :return: Nothing
+    :return: None for a normal run. For a project-batch run (gcp_project_batch_*
+        set), a GCPBatchResult; the caller must run finalize_gcp_ingestion() once
+        after every batch has succeeded.
     """
     # Initialize credentials from ADC if not provided. This ensures we have a single
     # credentials object used consistently across all API clients.
@@ -898,6 +933,27 @@ def start_gcp_ingestion(
     any_policy_bindings_synced = False
     policy_bindings_sync_failed = False
 
+    # Project batching: split each org's per-project resource sync across several
+    # runs that share one update_tag. Orgs, folders and the project list are
+    # still synced in full every batch (cheap, and keeps CRM cleanup correct).
+    # Steps whose cleanup spans projects are deferred to finalize_gcp_ingestion(),
+    # which the caller runs once after every batch succeeded:
+    # - inherited (org/folder) policy-binding cleanup, since each project's sync
+    #   refreshes the shared inherited bindings it sees;
+    # - global analysis jobs.
+    # Org-level role cleanup still runs every batch: sync_org_iam refreshes the
+    # roles at the start of every batch, before that cleanup.
+    batch_index = getattr(config, "gcp_project_batch_index", None)
+    batch_count = getattr(config, "gcp_project_batch_count", None)
+    batching = batch_count is not None and batch_index is not None
+    batch_org_ids: List[str] = []
+    if batching:
+        logger.info(
+            "GCP project batching enabled: batch %d of %d (zero-based).",
+            batch_index,
+            batch_count,
+        )
+
     # For each org, sync its folders and projects (as sub-resources), then ingest per-project services
     for org in orgs:
         org_resource_name = org.get("name", "")  # e.g., organizations/123456789012
@@ -952,10 +1008,21 @@ def start_gcp_ingestion(
         else:
             org_role_permissions_by_name = {}
 
+        batch_projects = select_project_batch(projects, batch_index, batch_count)
+        if batching:
+            logger.info(
+                "Syncing resources for batch %d/%d of %s: %d of %d projects.",
+                batch_index,
+                batch_count,
+                org_resource_name,
+                len(batch_projects),
+                len(projects),
+            )
+
         # Ingest per-project resources (these run their own cleanup immediately since they're leaf nodes)
         project_resources_result = _sync_project_resources(
             neo4j_session,
-            projects,
+            batch_projects,
             config.update_tag,
             common_job_parameters,
             credentials=credentials,
@@ -970,7 +1037,16 @@ def start_gcp_ingestion(
             any_policy_bindings_synced = True
         else:
             policy_bindings_sync_failed = True
-        if project_resources_result.policy_bindings_cleanup_safe:
+        if batching:
+            batch_org_ids.append(org_resource_name)
+            if policy_bindings_requested:
+                logger.info(
+                    "Deferring inherited GCP policy bindings cleanup for %s to "
+                    "finalize (this batch's policy bindings complete: %s).",
+                    org_resource_name,
+                    project_resources_result.policy_bindings_cleanup_safe,
+                )
+        elif project_resources_result.policy_bindings_cleanup_safe:
             policy_bindings.cleanup_inherited_policy_bindings(
                 neo4j_session,
                 common_job_parameters,
@@ -1054,6 +1130,40 @@ def start_gcp_ingestion(
     # exclusion means the org was never inventoried this run, so its existing
     # data is preserved; callers that want deletion can remove it explicitly.
 
+    # A batch defers the global analysis jobs to finalize_gcp_ingestion(),
+    # which runs once after every batch has loaded its projects.
+    if batching:
+        logger.info(
+            "Deferring GCP analysis jobs for batch %d/%d to finalize.",
+            batch_index,
+            batch_count,
+        )
+        return GCPBatchResult(
+            org_ids=batch_org_ids,
+            policy_bindings_complete=not policy_bindings_sync_failed,
+        )
+
+    _run_gcp_analysis_jobs(
+        neo4j_session,
+        common_job_parameters,
+        requested_syncs,
+        policy_bindings_fully_synced=(
+            any_policy_bindings_synced and not policy_bindings_sync_failed
+        ),
+    )
+    return None
+
+
+def _run_gcp_analysis_jobs(
+    neo4j_session: neo4j.Session,
+    common_job_parameters: Dict,
+    requested_syncs: Set[str] | None,
+    policy_bindings_fully_synced: bool,
+) -> None:
+    """
+    Global (not project-scoped) analysis jobs. Each recomputes its result over
+    the whole graph, so run them once after all project data is loaded.
+    """
     if requested_syncs is None or "compute" in requested_syncs:
         run_analysis_job(
             "gcp_ip_node_label_migration.json",
@@ -1105,9 +1215,6 @@ def start_gcp_ingestion(
     policy_bindings_requested = (
         requested_syncs is None or "policy_bindings" in requested_syncs
     )
-    policy_bindings_fully_synced = (
-        any_policy_bindings_synced and not policy_bindings_sync_failed
-    )
     if storage_requested and policy_bindings_requested and policy_bindings_fully_synced:
         run_typed_analysis_job(
             GCP_BUCKET_PUBLIC_PROJECTION,
@@ -1121,3 +1228,80 @@ def start_gcp_ingestion(
             "Existing _ont_public values remain in place to avoid acting on "
             "stale APPLIES_TO edges."
         )
+
+
+@timeit
+def finalize_gcp_ingestion(
+    neo4j_session: neo4j.Session,
+    config: Config,
+    cleanup_org_ids: List[str],
+    policy_bindings_complete: bool,
+    credentials: Optional[GoogleCredentials] = None,
+) -> None:
+    """
+    Finish a project-batched GCP sync. Call once, after every batch run of
+    start_gcp_ingestion() (all with config.update_tag) has succeeded.
+
+    - Inherited org/folder policy-binding cleanup for each org in
+      `cleanup_org_ids`, only if `policy_bindings_complete` (every batch fully
+      refreshed its projects' bindings). Otherwise bindings are preserved.
+    - The global analysis jobs, once.
+
+    Do not call this if any batch failed: inherited bindings refreshed only by
+    the failed batch's projects would be deleted as stale.
+
+    :param cleanup_org_ids: Full org resource names, e.g. ["organizations/123"].
+    :param policy_bindings_complete: AND of every batch's GCPBatchResult.policy_bindings_complete.
+    """
+    requested_syncs: Set[str] | None = None
+    if config.gcp_requested_syncs:
+        requested_syncs = set(
+            parse_and_validate_gcp_requested_syncs(config.gcp_requested_syncs),
+        )
+    policy_bindings_requested = (
+        requested_syncs is None or "policy_bindings" in requested_syncs
+    )
+    common_job_parameters: Dict = {
+        "UPDATE_TAG": config.update_tag,
+        "gcp_permission_relationships_file": config.gcp_permission_relationships_file,
+    }
+
+    if policy_bindings_requested and cleanup_org_ids:
+        if not policy_bindings_complete:
+            logger.warning(
+                "Skipping inherited GCP policy bindings cleanup for %s because not "
+                "every batch fully synced its projects' policy bindings. Preserving "
+                "existing inherited policy bindings.",
+                cleanup_org_ids,
+            )
+        else:
+            if credentials is None:
+                credentials = get_gcp_credentials()
+                if credentials is None:
+                    raise RuntimeError(
+                        "GCP credentials are not available; cannot finalize GCP ingestion."
+                    )
+            for org_resource_name in cleanup_org_ids:
+                # Same folder set the batches used (excluded subtrees pruned).
+                folders = get_gcp_folders(
+                    org_resource_name,
+                    credentials=credentials,
+                    excluded_folder_ids=config.gcp_excluded_folder_ids,
+                )
+                logger.info(
+                    "Finalize: inherited GCP policy bindings cleanup for %s (%d folders).",
+                    org_resource_name,
+                    len(folders),
+                )
+                policy_bindings.cleanup_inherited_policy_bindings(
+                    neo4j_session,
+                    {**common_job_parameters, "ORG_RESOURCE_NAME": org_resource_name},
+                    [folder["name"] for folder in folders if folder.get("name")],
+                )
+
+    _run_gcp_analysis_jobs(
+        neo4j_session,
+        common_job_parameters,
+        requested_syncs,
+        policy_bindings_fully_synced=bool(cleanup_org_ids) and policy_bindings_complete,
+    )

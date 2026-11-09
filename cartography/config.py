@@ -211,6 +211,14 @@ class Config:
     :param gcp_excluded_folder_ids: List of GCP folder IDs to exclude from ingestion (entire subtree is skipped). Optional.
     :type gcp_exclude_org_root_projects: bool
     :param gcp_exclude_org_root_projects: If True, projects attached directly to the organization root are excluded. Defaults to False. Optional.
+    :type gcp_project_batch_index: int
+    :param gcp_project_batch_index: Zero-based batch to sync when splitting each org's projects into
+        gcp_project_batch_count batches (sorted by project ID). Orgs, folders and the project list are
+        still synced in full; only per-project resources are limited to the batch. Run every batch with
+        the same update_tag; inherited org/folder policy-binding cleanup runs only in the last batch.
+        Optional.
+    :type gcp_project_batch_count: int
+    :param gcp_project_batch_count: Number of project batches. Set together with gcp_project_batch_index. Optional.
     :type jamf_base_uri: string
     :param jamf_base_uri: Jamf data provider base URI, e.g. https://example.jamfcloud.com. Optional.
     :type jamf_user: string
@@ -803,6 +811,8 @@ class Config:
         gcp_excluded_org_ids=None,
         gcp_excluded_folder_ids=None,
         gcp_exclude_org_root_projects=False,
+        gcp_project_batch_index=None,
+        gcp_project_batch_count=None,
         orca_api_endpoint=None,
         orca_api_token=None,
         microsoft_delegated_auth=False,
@@ -918,6 +928,20 @@ class Config:
             set(gcp_excluded_folder_ids) if gcp_excluded_folder_ids else set()
         )
         self.gcp_exclude_org_root_projects = gcp_exclude_org_root_projects
+        if (gcp_project_batch_index is None) != (gcp_project_batch_count is None):
+            raise ValueError(
+                "gcp_project_batch_index and gcp_project_batch_count must be set together."
+            )
+        if gcp_project_batch_count is not None and not (
+            gcp_project_batch_count >= 1
+            and 0 <= gcp_project_batch_index < gcp_project_batch_count
+        ):
+            raise ValueError(
+                "gcp_project_batch_index must satisfy 0 <= index < count, count >= 1; "
+                f"got index={gcp_project_batch_index}, count={gcp_project_batch_count}."
+            )
+        self.gcp_project_batch_index = gcp_project_batch_index
+        self.gcp_project_batch_count = gcp_project_batch_count
         self.jamf_base_uri = jamf_base_uri
         self.jamf_user = jamf_user
         self.jamf_password = jamf_password

@@ -90,114 +90,105 @@ def _get_instance_group_members(
     return members
 
 
-@timeit
-def get_gcp_zonal_instance_groups(
+def _get_aggregated_instance_groups(
     project_id: str,
-    zones: list[dict],
+    compute: Resource,
+) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
+    """
+    Fetch every zonal and regional instance group in a project with one
+    instanceGroups.aggregatedList chain, instead of one list call per zone plus
+    one per region (~175 calls, ~90s per Compute-enabled project even when it
+    has no instance groups). Scopes come back keyed "zones/{zone}" or
+    "regions/{region}".
+
+    :return: (groups by zone name, groups by region name)
+    """
+    by_zone: dict[str, list[dict]] = {}
+    by_region: dict[str, list[dict]] = {}
+    req = compute.instanceGroups().aggregatedList(
+        project=project_id,
+        returnPartialSuccess=True,
+    )
+    while req is not None:
+        try:
+            res = gcp_api_execute_with_retry(req)
+        except HttpError as e:
+            if classify_gcp_http_error(e) == "transient":
+                logger.warning(
+                    "Transient error listing instance groups for project %s: %s; keeping groups fetched so far.",
+                    project_id,
+                    summarize_gcp_http_error(e),
+                )
+                break
+            raise
+        for scope, scoped_list in res.get("items", {}).items():
+            warning_code = (scoped_list.get("warning") or {}).get("code")
+            if warning_code and warning_code != "NO_RESULTS_ON_PAGE":
+                logger.warning(
+                    "GCP: instanceGroups.aggregatedList for project %s reported %s for scope %s.",
+                    project_id,
+                    warning_code,
+                    scope,
+                )
+            groups = scoped_list.get("instanceGroups")
+            if not groups:
+                continue
+            kind, _, name = scope.partition("/")
+            if kind == "zones":
+                by_zone.setdefault(name, []).extend(groups)
+            elif kind == "regions":
+                by_region.setdefault(name, []).extend(groups)
+        req = compute.instanceGroups().aggregatedList_next(
+            previous_request=req,
+            previous_response=res,
+        )
+    return by_zone, by_region
+
+
+def _to_responses(
+    project_id: str,
+    groups_by_location: dict[str, list[dict]],
+    location_kind: str,
     compute: Resource,
 ) -> list[Resource]:
     """
-    Return list of instance group response objects across all zones in a project.
-    Each instance group item is enriched with a '_members' field containing its member instances.
-    :param project_id: The project ID
-    :param zones: The list of zones to query
-    :param compute: The compute resource object
-    :return: A list of response objects of the form {id: str, items: [...]}
+    Enrich each group with '_members' and regroup into the per-location
+    {id, items} response objects transform_gcp_instance_groups() expects.
     """
     response_objects: list[Resource] = []
-    for zone in zones:
-        items: list[dict] = []
-        response_id = f"projects/{project_id}/zones/{zone['name']}/instanceGroups"
-        req = compute.instanceGroups().list(project=project_id, zone=zone["name"])
-        while req is not None:
-            try:
-                res = gcp_api_execute_with_retry(req)
-            except HttpError as e:
-                if classify_gcp_http_error(e) == "transient":
-                    logger.warning(
-                        "Transient error listing instance groups for project %s zone %s: %s; skipping.",
-                        project_id,
-                        zone.get("name"),
-                        summarize_gcp_http_error(e),
-                    )
-                    break
-                raise
-            items.extend(res.get("items", []))
-            response_id = res.get("id", response_id)
-            req = compute.instanceGroups().list_next(
-                previous_request=req, previous_response=res
-            )
-
-        if not items:
-            continue
-
+    for location, items in groups_by_location.items():
         for ig in items:
             ig["_members"] = _get_instance_group_members(
                 project_id,
                 ig["name"],
-                zone["name"],
-                None,
+                location if location_kind == "zones" else None,
+                location if location_kind == "regions" else None,
                 compute,
             )
-        if items:
-            response_objects.append({"id": response_id, "items": items})
+        response_objects.append(
+            {
+                "id": f"projects/{project_id}/{location_kind}/{location}/instanceGroups",
+                "items": items,
+            }
+        )
     return response_objects
 
 
 @timeit
-def get_gcp_regional_instance_groups(
+def get_gcp_instance_groups(
     project_id: str,
-    regions: list[str],
     compute: Resource,
-) -> list[Resource]:
+) -> tuple[list[Resource], list[Resource]]:
     """
-    Return list of instance group response objects across all regions in a project.
+    Return (zonal, regional) instance group response objects for a project.
     Each instance group item is enriched with a '_members' field containing its member instances.
-    :param project_id: The project ID
-    :param regions: The list of region names to query
-    :param compute: The compute resource object
-    :return: A list of response objects of the form {id: str, items: [...]}
+    :return: Two lists of response objects of the form {id: str, items: [...]}
     """
-    response_objects: list[Resource] = []
-    for region in regions:
-        items: list[dict] = []
-        response_id = f"projects/{project_id}/regions/{region}/instanceGroups"
-        req = compute.regionInstanceGroups().list(project=project_id, region=region)
-        # Track invalid regions so we can skip them entirely rather than ingesting partial data
-        skip_region = False
-        while req is not None:
-            try:
-                res = gcp_api_execute_with_retry(req)
-            except HttpError as e:
-                if classify_gcp_http_error(e) == "invalid":
-                    logger.warning(
-                        "GCP: Invalid region %s for project %s; skipping instance groups sync for this region.",
-                        region,
-                        project_id,
-                    )
-                    skip_region = True
-                    break
-                raise
-            items.extend(res.get("items", []))
-            response_id = res.get("id", response_id)
-            req = compute.regionInstanceGroups().list_next(
-                previous_request=req, previous_response=res
-            )
-
-        if skip_region:
-            continue
-
-        for ig in items:
-            ig["_members"] = _get_instance_group_members(
-                project_id,
-                ig["name"],
-                None,
-                region,
-                compute,
-            )
-        if items:
-            response_objects.append({"id": response_id, "items": items})
-    return response_objects
+    by_zone, by_region = _get_aggregated_instance_groups(project_id, compute)
+    return (
+        _to_responses(project_id, by_zone, "zones", compute),
+        _to_responses(project_id, by_region, "regions", compute),
+    )
 
 
 @timeit
@@ -303,13 +294,17 @@ def sync_gcp_instance_groups(
     """
     logger.info("Syncing GCP instance groups for project %s", project_id)
 
+    # One aggregated call covers zonal and regional groups. `zones` and
+    # `regions` are no longer needed for the fetch; they stay in the signature
+    # so callers are unchanged. The only caller (compute.sync) already returns
+    # early when the Compute API is disabled.
+    zonal_responses, regional_responses = get_gcp_instance_groups(project_id, compute)
+
     # Zonal instance groups
-    zonal_responses = get_gcp_zonal_instance_groups(project_id, zones, compute)
     instance_groups = transform_gcp_instance_groups(zonal_responses, project_id)
     load_gcp_instance_groups(neo4j_session, instance_groups, gcp_update_tag, project_id)
 
     # Regional instance groups
-    regional_responses = get_gcp_regional_instance_groups(project_id, regions, compute)
     instance_groups = transform_gcp_instance_groups(regional_responses, project_id)
     load_gcp_instance_groups(neo4j_session, instance_groups, gcp_update_tag, project_id)
 

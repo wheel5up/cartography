@@ -980,6 +980,29 @@ class CLI:
                     hidden=PANEL_GCP not in visible_panels,
                 ),
             ] = False,
+            gcp_project_batch_index: Annotated[
+                int | None,
+                typer.Option(
+                    "--gcp-project-batch-index",
+                    help=(
+                        "Zero-based project batch to sync. Splits each org's projects "
+                        "(sorted by ID) into --gcp-project-batch-count batches; run every "
+                        "batch with the same --update-tag. Org-wide cleanup and analysis "
+                        "run in the last batch."
+                    ),
+                    rich_help_panel=PANEL_GCP,
+                    hidden=PANEL_GCP not in visible_panels,
+                ),
+            ] = None,
+            gcp_project_batch_count: Annotated[
+                int | None,
+                typer.Option(
+                    "--gcp-project-batch-count",
+                    help="Number of project batches. Use with --gcp-project-batch-index.",
+                    rich_help_panel=PANEL_GCP,
+                    hidden=PANEL_GCP not in visible_panels,
+                ),
+            ] = None,
             # =================================================================
             # OCI Options
             # =================================================================
@@ -4001,6 +4024,8 @@ class CLI:
                     else None
                 ),
                 gcp_exclude_org_root_projects=gcp_exclude_org_root_projects,
+                gcp_project_batch_index=gcp_project_batch_index,
+                gcp_project_batch_count=gcp_project_batch_count,
                 jamf_base_uri=jamf_base_uri,
                 jamf_user=jamf_user,
                 jamf_password=jamf_password,

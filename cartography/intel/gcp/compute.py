@@ -125,28 +125,53 @@ def get_gcp_instance_responses(
     if not zones:
         # If the Compute Engine API is not enabled for a project, there are no zones and therefore no instances.
         return []
-    response_objects: list[Resource] = []
-    for zone in zones:
-        req = compute.instances().list(project=project_id, zone=zone["name"])
+    # One instances.aggregatedList chain instead of one instances.list per zone.
+    # GCP has ~130 zones, so the per-zone loop cost ~80s per Compute-enabled
+    # project even when it has no VMs; the aggregated call takes well under 1s.
+    # The result is regrouped into the same per-zone {id, items} objects the
+    # per-zone loop returned, so transform_gcp_instances() is unchanged.
+    by_zone: dict[str, list[dict]] = {}
+    req = compute.instances().aggregatedList(
+        project=project_id,
+        returnPartialSuccess=True,
+    )
+    while req is not None:
         try:
             res = gcp_api_execute_with_retry(req)
-            response_objects.append(res)
         except HttpError as e:
-            # Intentional widening vs. the old check (reason in {"backendError",
-            # "rateLimitExceeded", "internalError"}): classify_gcp_http_error covers
-            # 429, generic 500/502/504, and 403-quota responses in addition to the
-            # original three reasons. After gcp_api_execute_with_retry has already
-            # retried all of these, skipping the zone is the right fallback.
+            # Same fallback the per-zone loop used for a transient error (after
+            # gcp_api_execute_with_retry has already retried): keep what was
+            # fetched rather than failing the whole project.
             if classify_gcp_http_error(e) == "transient":
                 logger.warning(
-                    "Transient error listing instances for project %s zone %s: %s; skipping this zone.",
+                    "Transient error listing instances for project %s: %s; keeping %d zones fetched so far.",
                     project_id,
-                    zone.get("name"),
                     summarize_gcp_http_error(e),
+                    len(by_zone),
                 )
-                continue
+                break
             raise
-    return response_objects
+        for scope, scoped_list in res.get("items", {}).items():
+            warning_code = (scoped_list.get("warning") or {}).get("code")
+            if warning_code and warning_code != "NO_RESULTS_ON_PAGE":
+                logger.warning(
+                    "GCP: instances.aggregatedList for project %s reported %s for scope %s.",
+                    project_id,
+                    warning_code,
+                    scope,
+                )
+            instances = scoped_list.get("instances")
+            if instances:
+                # scope is "zones/{zone}"
+                by_zone.setdefault(scope.split("/")[-1], []).extend(instances)
+        req = compute.instances().aggregatedList_next(
+            previous_request=req,
+            previous_response=res,
+        )
+    return [
+        {"id": f"projects/{project_id}/zones/{zone}/instances", "items": items}
+        for zone, items in by_zone.items()
+    ]
 
 
 @timeit

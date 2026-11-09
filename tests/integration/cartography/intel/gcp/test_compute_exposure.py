@@ -62,13 +62,8 @@ def _sync_exposure_entities(neo4j_session, common_job_parameters: dict) -> None:
 
 @patch.object(
     cartography.intel.gcp.instancegroup,
-    "get_gcp_zonal_instance_groups",
-    return_value=INSTANCE_GROUP_RESPONSES,
-)
-@patch.object(
-    cartography.intel.gcp.instancegroup,
-    "get_gcp_regional_instance_groups",
-    return_value=[],
+    "get_gcp_instance_groups",
+    return_value=(INSTANCE_GROUP_RESPONSES, []),
 )
 @patch.object(
     cartography.intel.gcp.cloud_armor,
@@ -89,8 +84,7 @@ def test_sync_gcp_compute_exposure_entities_and_relationships(
     mock_get_instances,
     mock_get_backend_services,
     mock_get_cloud_armor,
-    mock_get_regional_igs,
-    mock_get_zonal_igs,
+    mock_get_igs,
     neo4j_session,
 ):
     # Arrange
@@ -201,13 +195,8 @@ def test_sync_gcp_compute_exposure_entities_and_relationships(
 
 @patch.object(
     cartography.intel.gcp.instancegroup,
-    "get_gcp_zonal_instance_groups",
-    return_value=INSTANCE_GROUP_RESPONSES,
-)
-@patch.object(
-    cartography.intel.gcp.instancegroup,
-    "get_gcp_regional_instance_groups",
-    return_value=[],
+    "get_gcp_instance_groups",
+    return_value=(INSTANCE_GROUP_RESPONSES, []),
 )
 @patch.object(
     cartography.intel.gcp.cloud_armor,
@@ -240,8 +229,7 @@ def test_scoped_gcp_compute_exposure_jobs_model_and_cleanup(
     mock_get_instances,
     mock_get_backend_services,
     mock_get_cloud_armor,
-    mock_get_regional_igs,
-    mock_get_zonal_igs,
+    mock_get_igs,
     neo4j_session,
 ):
     # Arrange
