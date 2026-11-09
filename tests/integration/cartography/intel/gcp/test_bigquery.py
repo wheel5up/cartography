@@ -165,6 +165,16 @@ def test_sync_bigquery(
     )
     assert result.single()["cnt"] == 2
 
+    # Assert per-dataset table sync status
+    assert check_nodes(
+        neo4j_session,
+        "GCPBigQueryDataset",
+        ["id", "table_sync_mode", "table_count", "tables_synced", "table_sync_cap"],
+    ) == {
+        ("test-project:my_dataset", "full", 2, 2, 500),
+        ("test-project:other_dataset", "full", 1, 1, 500),
+    }
+
     # Assert tables — now include fields from tables.get
     assert check_nodes(
         neo4j_session,
