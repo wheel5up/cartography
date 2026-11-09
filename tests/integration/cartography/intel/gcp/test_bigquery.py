@@ -90,7 +90,7 @@ def test_sync_bigquery(
         ("test-project", "other_dataset", "events"): MOCK_TABLE_DETAIL_EVENTS,
     }
 
-    def _mock_get_table_detail(client, project_id, dataset_id, table_id):
+    def _mock_get_table_detail(client, project_id, dataset_id, table_id, http=None):
         return detail_map.get((project_id, dataset_id, table_id))
 
     mock_get_table_detail.side_effect = _mock_get_table_detail

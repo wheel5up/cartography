@@ -1,4 +1,7 @@
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import neo4j
 from googleapiclient.discovery import Resource
@@ -6,12 +9,26 @@ from googleapiclient.errors import HttpError
 
 from cartography.client.core.tx import load
 from cartography.graph.job import GraphJob
+from cartography.intel.gcp.clients import _authorized_http_with_timeout
 from cartography.intel.gcp.util import gcp_api_execute_with_retry
 from cartography.intel.gcp.util import is_gcp_http_error_category
 from cartography.models.gcp.bigquery.table import GCPBigQueryTableSchema
 from cartography.util import timeit
 
 logger = logging.getLogger(__name__)
+
+# Concurrent tables.get calls per dataset.
+TABLE_DETAIL_WORKERS = 16
+
+
+def _is_hidden_dataset(dataset_id: str) -> bool:
+    """
+    Datasets whose ID starts with "_" are hidden, e.g. the anonymous datasets
+    holding cached query results ("_<hash>", tables "anon..."). They can hold
+    thousands of short-lived tables whose tables.get is typically denied, so we
+    inventory them from tables.list only and skip the per-table detail calls.
+    """
+    return dataset_id.startswith("_")
 
 
 def _normalize_connection_id(connection_id: str | None) -> str | None:
@@ -82,6 +99,7 @@ def get_bigquery_table_detail(
     project_id: str,
     dataset_id: str,
     table_id: str,
+    http: Any = None,
 ) -> dict | None:
     """
     Gets full details for a single BigQuery table via tables.get.
@@ -89,6 +107,9 @@ def get_bigquery_table_detail(
     tables.list does not return numBytes, numRows, numLongTermBytes, description,
     friendlyName, or externalDataConfiguration. We call tables.get per table to
     retrieve these fields.
+
+    :param http: Optional transport to execute the request on, for callers
+        running this from worker threads (httplib2 is not thread-safe).
 
     Returns:
         dict: The full table resource
@@ -103,6 +124,8 @@ def get_bigquery_table_detail(
             datasetId=dataset_id,
             tableId=table_id,
         )
+        if http is not None:
+            request.http = http
         return gcp_api_execute_with_retry(request)
     except HttpError as e:
         if is_gcp_http_error_category(
@@ -192,28 +215,53 @@ def sync_bigquery_tables(
     logger.info("Syncing BigQuery tables for project %s.", project_id)
     all_tables_raw: list[tuple[list[dict], str]] = []
 
-    for dataset in datasets:
-        ref = dataset["datasetReference"]
-        dataset_id = ref["datasetId"]
+    # tables.get is one call per table, so run them concurrently. httplib2 is
+    # not thread-safe, so each worker thread gets its own AuthorizedHttp (same
+    # credentials and timeout as the client's).
+    credentials = getattr(getattr(client, "_http", None), "credentials", None)
+    thread_local = threading.local()
 
-        tables_raw = get_bigquery_tables(client, project_id, dataset_id)
-        if tables_raw is not None:
+    def _http() -> Any:
+        if credentials is None:
+            return None  # tests / non-standard clients: use the request's own http
+        if not hasattr(thread_local, "http"):
+            thread_local.http = _authorized_http_with_timeout(credentials)
+        return thread_local.http
+
+    with ThreadPoolExecutor(max_workers=TABLE_DETAIL_WORKERS) as executor:
+        for dataset in datasets:
+            ref = dataset["datasetReference"]
+            dataset_id = ref["datasetId"]
+
+            tables_raw = get_bigquery_tables(client, project_id, dataset_id)
+            if tables_raw is None:
+                continue
+            all_tables_raw.append((tables_raw, dataset_id))
+            if _is_hidden_dataset(dataset_id):
+                logger.info(
+                    "Skipping table details for hidden dataset %s:%s (%d tables).",
+                    project_id,
+                    dataset_id,
+                    len(tables_raw),
+                )
+                continue
+
             # Enrich each table with details from tables.get
-            for i, table in enumerate(tables_raw):
-                table_ref = table["tableReference"]
-                tid = table_ref["tableId"]
-                detail = get_bigquery_table_detail(client, project_id, dataset_id, tid)
+            details = executor.map(
+                lambda tid, ds=dataset_id: get_bigquery_table_detail(
+                    client, project_id, ds, tid, http=_http()
+                ),
+                [t["tableReference"]["tableId"] for t in tables_raw],
+            )
+            for table, detail in zip(tables_raw, details):
                 if detail is not None:
                     table.update(detail)
-                if (i + 1) % 100 == 0:
-                    logger.debug(
-                        "Fetched details for %d/%d tables in dataset %s:%s.",
-                        i + 1,
-                        len(tables_raw),
-                        project_id,
-                        dataset_id,
-                    )
-            all_tables_raw.append((tables_raw, dataset_id))
+            logger.info(
+                "Fetched details for %d tables in dataset %s:%s.",
+                len(tables_raw),
+                project_id,
+                dataset_id,
+            )
 
     all_tables_transformed: list[dict] = []
     for raw_tables, ds_id in all_tables_raw:
