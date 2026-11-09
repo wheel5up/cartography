@@ -1,6 +1,7 @@
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from typing import Any
 
 import neo4j
@@ -8,6 +9,7 @@ from googleapiclient.discovery import Resource
 from googleapiclient.errors import HttpError
 
 from cartography.client.core.tx import load
+from cartography.client.core.tx import run_write_query
 from cartography.graph.job import GraphJob
 from cartography.intel.gcp.clients import _authorized_http_with_timeout
 from cartography.intel.gcp.util import gcp_api_execute_with_retry
@@ -19,6 +21,26 @@ logger = logging.getLogger(__name__)
 
 # Concurrent tables.get calls per dataset.
 TABLE_DETAIL_WORKERS = 16
+
+# Datasets with more tables than this are not inventoried table by table; only
+# their external tables are loaded. See TableSyncMode.
+TABLE_SYNC_CAP = 500
+
+
+class TableSyncMode(str, Enum):
+    """
+    Recorded on each GCPBigQueryDataset as table_sync_mode, so a dataset whose
+    tables were not fully loaded is distinguishable from a small one.
+    """
+
+    # Every table loaded, with tables.get detail.
+    FULL = "full"
+    # Over TABLE_SYNC_CAP: only EXTERNAL tables loaded (with detail).
+    EXTERNAL_ONLY = "external_only"
+    # Hidden dataset: every table loaded from tables.list only, no detail.
+    NO_DETAIL = "no_detail"
+    # tables.list failed (e.g. access denied): no tables loaded.
+    FAILED = "failed"
 
 
 def _is_hidden_dataset(dataset_id: str) -> bool:
@@ -193,6 +215,30 @@ def load_bigquery_tables(
     )
 
 
+def _set_dataset_table_sync_status(
+    neo4j_session: neo4j.Session,
+    dataset_full_id: str,
+    mode: TableSyncMode,
+    table_count: int | None,
+    tables_synced: int,
+) -> None:
+    run_write_query(
+        neo4j_session,
+        """
+        MATCH (d:GCPBigQueryDataset {id: $DATASET_ID})
+        SET d.table_sync_mode = $MODE,
+            d.table_count = $TABLE_COUNT,
+            d.tables_synced = $TABLES_SYNCED,
+            d.table_sync_cap = $CAP
+        """,
+        DATASET_ID=dataset_full_id,
+        MODE=mode.value,
+        TABLE_COUNT=table_count,
+        TABLES_SYNCED=tables_synced,
+        CAP=TABLE_SYNC_CAP,
+    )
+
+
 @timeit
 def cleanup_bigquery_tables(
     neo4j_session: neo4j.Session,
@@ -213,7 +259,6 @@ def sync_bigquery_tables(
     common_job_parameters: dict,
 ) -> None:
     logger.info("Syncing BigQuery tables for project %s.", project_id)
-    all_tables_raw: list[tuple[list[dict], str]] = []
 
     # tables.get is one call per table, so run them concurrently. httplib2 is
     # not thread-safe, so each worker thread gets its own AuthorizedHttp (same
@@ -228,49 +273,68 @@ def sync_bigquery_tables(
             thread_local.http = _authorized_http_with_timeout(credentials)
         return thread_local.http
 
+    # Each dataset is fetched, loaded, and released before the next one, so
+    # memory is bounded by one dataset rather than the whole project.
     with ThreadPoolExecutor(max_workers=TABLE_DETAIL_WORKERS) as executor:
         for dataset in datasets:
-            ref = dataset["datasetReference"]
-            dataset_id = ref["datasetId"]
+            dataset_id = dataset["datasetReference"]["datasetId"]
+            dataset_full_id = f"{project_id}:{dataset_id}"
 
             tables_raw = get_bigquery_tables(client, project_id, dataset_id)
             if tables_raw is None:
-                continue
-            all_tables_raw.append((tables_raw, dataset_id))
-            if _is_hidden_dataset(dataset_id):
-                logger.info(
-                    "Skipping table details for hidden dataset %s:%s (%d tables).",
-                    project_id,
-                    dataset_id,
-                    len(tables_raw),
+                _set_dataset_table_sync_status(
+                    neo4j_session,
+                    dataset_full_id,
+                    TableSyncMode.FAILED,
+                    table_count=None,
+                    tables_synced=0,
                 )
                 continue
 
-            # Enrich each table with details from tables.get
-            details = executor.map(
-                lambda tid, ds=dataset_id: get_bigquery_table_detail(
-                    client, project_id, ds, tid, http=_http()
-                ),
-                [t["tableReference"]["tableId"] for t in tables_raw],
+            table_count = len(tables_raw)
+            if table_count > TABLE_SYNC_CAP:
+                # Too many tables to inventory (typically auto-generated, e.g.
+                # date-sharded exports). Keep only external tables, which point
+                # at data outside BigQuery.
+                mode = TableSyncMode.EXTERNAL_ONLY
+                tables_raw = [t for t in tables_raw if t.get("type") == "EXTERNAL"]
+            elif _is_hidden_dataset(dataset_id):
+                mode = TableSyncMode.NO_DETAIL
+            else:
+                mode = TableSyncMode.FULL
+
+            if mode != TableSyncMode.NO_DETAIL and tables_raw:
+                details = executor.map(
+                    lambda tid, ds=dataset_id: get_bigquery_table_detail(
+                        client, project_id, ds, tid, http=_http()
+                    ),
+                    [t["tableReference"]["tableId"] for t in tables_raw],
+                )
+                for table, detail in zip(tables_raw, details):
+                    if detail is not None:
+                        table.update(detail)
+
+            if tables_raw:
+                load_bigquery_tables(
+                    neo4j_session,
+                    transform_tables(tables_raw, project_id, dataset_full_id),
+                    project_id,
+                    update_tag,
+                )
+            _set_dataset_table_sync_status(
+                neo4j_session,
+                dataset_full_id,
+                mode,
+                table_count=table_count,
+                tables_synced=len(tables_raw),
             )
-            for table, detail in zip(tables_raw, details):
-                if detail is not None:
-                    table.update(detail)
             logger.info(
-                "Fetched details for %d tables in dataset %s:%s.",
+                "BigQuery dataset %s: %d tables, %d synced (mode=%s).",
+                dataset_full_id,
+                table_count,
                 len(tables_raw),
-                project_id,
-                dataset_id,
+                mode.value,
             )
-
-    all_tables_transformed: list[dict] = []
-    for raw_tables, ds_id in all_tables_raw:
-        dataset_full_id = f"{project_id}:{ds_id}"
-        all_tables_transformed.extend(
-            transform_tables(raw_tables, project_id, dataset_full_id),
-        )
-
-    load_bigquery_tables(neo4j_session, all_tables_transformed, project_id, update_tag)
 
     cleanup_job_params = common_job_parameters.copy()
     cleanup_job_params["PROJECT_ID"] = project_id

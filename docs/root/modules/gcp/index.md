@@ -74,6 +74,27 @@ Each relationship carries its own `has_condition`, `condition_title` and
 `condition_expression`, so a conditional binding on one table and an unconditional
 grant on its dataset are both represented, each on its own grain.
 
+## BigQuery table coverage
+
+Not every dataset's tables are loaded. Each `GCPBigQueryDataset` records what
+was synced:
+
+| Property | Meaning |
+|---|---|
+| `table_count` | Tables in the dataset per `tables.list` (null if listing failed) |
+| `tables_synced` | `GCPBigQueryTable` nodes loaded for the dataset |
+| `table_sync_mode` | `full`: every table, with detail. `external_only`: the dataset has more than `table_sync_cap` tables (typically auto-generated, e.g. date-sharded exports), so only `EXTERNAL` tables are loaded. `no_detail`: hidden dataset (ID starts with `_`), every table loaded without `tables.get` detail. `failed`: `tables.list` failed, no tables loaded. |
+| `table_sync_cap` | The cap in force when synced |
+
+Table-level questions (table inventory, table-level permissions) are only
+complete for `table_sync_mode = 'full'`:
+
+```cypher
+MATCH (d:GCPBigQueryDataset) WHERE d.table_sync_mode <> 'full'
+RETURN d.id, d.table_sync_mode, d.tables_synced, d.table_count
+ORDER BY d.table_count DESC
+```
+
 ```{toctree}
 config
 artifact-registry
