@@ -5,6 +5,7 @@ import pytest
 
 import cartography.intel.gcp
 from cartography.config import Config
+from cartography.intel.gcp import filter_projects
 from cartography.intel.gcp import GCPProjectResourcesSyncResult
 from cartography.intel.gcp import select_project_batch
 
@@ -45,12 +46,14 @@ def test_config_rejects_invalid_batch_settings(index, count):
         )
 
 
-def _run(batch_index, batch_count, bindings_safe=True):
+def _run(batch_index, batch_count, bindings_safe=True, include=None, exclude=None):
     config = Config(
         neo4j_uri="bolt://x",
         update_tag=100,
         gcp_project_batch_index=batch_index,
         gcp_project_batch_count=batch_count,
+        gcp_include_project_ids=include,
+        gcp_exclude_project_ids=exclude,
     )
     gcp = cartography.intel.gcp
     with (
@@ -114,6 +117,48 @@ def test_batch_reports_incomplete_policy_bindings():
     assert r["result"] == gcp_batch_result([ORG], False)
 
 
+def test_filter_projects_include_and_exclude():
+    ids = lambda ps: sorted(p["projectId"] for p in ps)  # noqa: E731
+    assert filter_projects(PROJECTS, None, None) is PROJECTS
+    assert ids(filter_projects(PROJECTS, {"p03", "p07"}, None)) == ["p03", "p07"]
+    assert len(filter_projects(PROJECTS, None, {"p03", "nope"})) == 9
+
+
+def test_filter_projects_rejects_missing_include():
+    with pytest.raises(ValueError, match="nope"):
+        filter_projects(PROJECTS, {"p03", "nope"}, None)
+
+
+def test_config_rejects_include_and_exclude_together():
+    with pytest.raises(ValueError):
+        Config(
+            neo4j_uri="bolt://x",
+            gcp_include_project_ids=["a"],
+            gcp_exclude_project_ids=["b"],
+        )
+
+
+def test_include_run_syncs_only_listed_projects_and_defers_like_a_batch():
+    r = _run(None, None, include=["p05"])
+    assert r["synced"] == ["p05"]
+    assert r["cleanup_inherited"] == 0
+    assert r["analysis"] == 0
+    assert r["result"] == gcp_batch_result([ORG], True)
+
+
+def test_exclude_applies_before_batching_and_covers_the_rest():
+    batches = [_run(i, 3, exclude=["p00", "p04"])["synced"] for i in range(3)]
+    assert batches == [
+        ["p01", "p05", "p08"],
+        ["p02", "p06", "p09"],
+        ["p03", "p07"],
+    ]
+    included = _run(None, None, include=["p00", "p04"])["synced"]
+    assert sorted(sum(batches, []) + included) == sorted(
+        p["projectId"] for p in PROJECTS
+    )
+
+
 def gcp_batch_result(org_ids, complete):
     return cartography.intel.gcp.GCPBatchResult(
         org_ids=org_ids, policy_bindings_complete=complete
@@ -138,7 +183,11 @@ def _finalize(org_ids, complete, requested_syncs=None):
         gcp.finalize_gcp_ingestion(
             MagicMock(), config, org_ids, complete, credentials=MagicMock()
         )
-    return get_folders, cleanup_inherited, run_analysis.call_count + run_typed.call_count
+    return (
+        get_folders,
+        cleanup_inherited,
+        run_analysis.call_count + run_typed.call_count,
+    )
 
 
 def test_finalize_cleans_each_org_with_its_folders_and_runs_analysis():

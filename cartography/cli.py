@@ -1003,6 +1003,33 @@ class CLI:
                     hidden=PANEL_GCP not in visible_panels,
                 ),
             ] = None,
+            gcp_include_project_ids: Annotated[
+                str | None,
+                typer.Option(
+                    "--gcp-include-project-ids",
+                    help=(
+                        "Comma-separated GCP project IDs to sync resources for (all must "
+                        "exist). Org-wide cleanup and analysis are deferred to finalize, "
+                        "as for a project batch. Mutually exclusive with "
+                        "--gcp-exclude-project-ids."
+                    ),
+                    rich_help_panel=PANEL_GCP,
+                    hidden=PANEL_GCP not in visible_panels,
+                ),
+            ] = None,
+            gcp_exclude_project_ids: Annotated[
+                str | None,
+                typer.Option(
+                    "--gcp-exclude-project-ids",
+                    help=(
+                        "Comma-separated GCP project IDs to skip (applied before "
+                        "batching). Org-wide cleanup and analysis are deferred to "
+                        "finalize, as for a project batch."
+                    ),
+                    rich_help_panel=PANEL_GCP,
+                    hidden=PANEL_GCP not in visible_panels,
+                ),
+            ] = None,
             # =================================================================
             # OCI Options
             # =================================================================
@@ -4026,6 +4053,16 @@ class CLI:
                 gcp_exclude_org_root_projects=gcp_exclude_org_root_projects,
                 gcp_project_batch_index=gcp_project_batch_index,
                 gcp_project_batch_count=gcp_project_batch_count,
+                gcp_include_project_ids=(
+                    [x.strip() for x in gcp_include_project_ids.split(",") if x.strip()]
+                    if gcp_include_project_ids
+                    else None
+                ),
+                gcp_exclude_project_ids=(
+                    [x.strip() for x in gcp_exclude_project_ids.split(",") if x.strip()]
+                    if gcp_exclude_project_ids
+                    else None
+                ),
                 jamf_base_uri=jamf_base_uri,
                 jamf_user=jamf_user,
                 jamf_password=jamf_password,

@@ -807,6 +807,36 @@ def _sync_project_resources(
     )
 
 
+def filter_projects(
+    projects: List[Dict],
+    include_project_ids: Optional[Set[str]],
+    exclude_project_ids: Optional[Set[str]],
+) -> List[Dict]:
+    """
+    Apply gcp_include_project_ids / gcp_exclude_project_ids to an org's projects.
+
+    An included project that the org does not have raises, so a typo or a
+    deleted project fails the run instead of silently syncing nothing. An
+    excluded project that is absent is only logged.
+    """
+    present = {p.get("projectId") for p in projects}
+    if include_project_ids:
+        missing = sorted(include_project_ids - present)
+        if missing:
+            raise ValueError(
+                f"gcp_include_project_ids not found in the organization: {missing}"
+            )
+        return [p for p in projects if p.get("projectId") in include_project_ids]
+    if exclude_project_ids:
+        absent = sorted(exclude_project_ids - present)
+        if absent:
+            logger.info(
+                "gcp_exclude_project_ids not found in the organization: %s", absent
+            )
+        return [p for p in projects if p.get("projectId") not in exclude_project_ids]
+    return projects
+
+
 def select_project_batch(
     projects: List[Dict],
     batch_index: Optional[int],
@@ -943,15 +973,24 @@ def start_gcp_ingestion(
     # - global analysis jobs.
     # Org-level role cleanup still runs every batch: sync_org_iam refreshes the
     # roles at the start of every batch, before that cleanup.
+    #
+    # A run limited by gcp_include_project_ids / gcp_exclude_project_ids also
+    # covers only part of each org, so it is treated as a batch the same way.
     batch_index = getattr(config, "gcp_project_batch_index", None)
     batch_count = getattr(config, "gcp_project_batch_count", None)
-    batching = batch_count is not None and batch_index is not None
+    include_project_ids = getattr(config, "gcp_include_project_ids", None)
+    exclude_project_ids = getattr(config, "gcp_exclude_project_ids", None)
+    batching = (batch_count is not None and batch_index is not None) or bool(
+        include_project_ids or exclude_project_ids
+    )
+    batch_label = f"{batch_index}/{batch_count}" if batch_count is not None else "1/1"
     batch_org_ids: List[str] = []
     if batching:
         logger.info(
-            "GCP project batching enabled: batch %d of %d (zero-based).",
-            batch_index,
-            batch_count,
+            "GCP partial run enabled: batch %s (zero-based), include=%s, exclude=%s.",
+            batch_label,
+            sorted(include_project_ids or []),
+            sorted(exclude_project_ids or []),
         )
 
     # For each org, sync its folders and projects (as sub-resources), then ingest per-project services
@@ -1008,12 +1047,15 @@ def start_gcp_ingestion(
         else:
             org_role_permissions_by_name = {}
 
-        batch_projects = select_project_batch(projects, batch_index, batch_count)
+        batch_projects = select_project_batch(
+            filter_projects(projects, include_project_ids, exclude_project_ids),
+            batch_index,
+            batch_count,
+        )
         if batching:
             logger.info(
-                "Syncing resources for batch %d/%d of %s: %d of %d projects.",
-                batch_index,
-                batch_count,
+                "Syncing resources for batch %s of %s: %d of %d projects.",
+                batch_label,
                 org_resource_name,
                 len(batch_projects),
                 len(projects),
@@ -1134,9 +1176,7 @@ def start_gcp_ingestion(
     # which runs once after every batch has loaded its projects.
     if batching:
         logger.info(
-            "Deferring GCP analysis jobs for batch %d/%d to finalize.",
-            batch_index,
-            batch_count,
+            "Deferring GCP analysis jobs for batch %s to finalize.", batch_label
         )
         return GCPBatchResult(
             org_ids=batch_org_ids,

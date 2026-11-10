@@ -219,6 +219,14 @@ class Config:
         Optional.
     :type gcp_project_batch_count: int
     :param gcp_project_batch_count: Number of project batches. Set together with gcp_project_batch_index. Optional.
+    :type gcp_include_project_ids: list[str]
+    :param gcp_include_project_ids: Sync per-project resources only for these project IDs. Every ID must
+        exist in the organization. Like a project batch, the run defers org-wide cleanup and analysis to
+        finalize. Mutually exclusive with gcp_exclude_project_ids. Optional.
+    :type gcp_exclude_project_ids: list[str]
+    :param gcp_exclude_project_ids: Skip per-project resources for these project IDs (applied before
+        batching), e.g. to run large projects in their own gcp_include_project_ids invocation. Defers
+        org-wide cleanup and analysis to finalize. Optional.
     :type jamf_base_uri: string
     :param jamf_base_uri: Jamf data provider base URI, e.g. https://example.jamfcloud.com. Optional.
     :type jamf_user: string
@@ -813,6 +821,8 @@ class Config:
         gcp_exclude_org_root_projects=False,
         gcp_project_batch_index=None,
         gcp_project_batch_count=None,
+        gcp_include_project_ids=None,
+        gcp_exclude_project_ids=None,
         orca_api_endpoint=None,
         orca_api_token=None,
         microsoft_delegated_auth=False,
@@ -942,6 +952,16 @@ class Config:
             )
         self.gcp_project_batch_index = gcp_project_batch_index
         self.gcp_project_batch_count = gcp_project_batch_count
+        if gcp_include_project_ids and gcp_exclude_project_ids:
+            raise ValueError(
+                "gcp_include_project_ids and gcp_exclude_project_ids are mutually exclusive."
+            )
+        self.gcp_include_project_ids = (
+            set(gcp_include_project_ids) if gcp_include_project_ids else None
+        )
+        self.gcp_exclude_project_ids = (
+            set(gcp_exclude_project_ids) if gcp_exclude_project_ids else None
+        )
         self.jamf_base_uri = jamf_base_uri
         self.jamf_user = jamf_user
         self.jamf_password = jamf_password
